@@ -13,19 +13,24 @@ typedef struct {
   void *stream;
   AudioStreamBasicDescription format;
 } XaviAudioTap;
-static void tap_init(MTAudioProcessingTapRef tap, void *client, void **storage) { *storage = client; }
+static void tap_init(MTAudioProcessingTapRef tap, void *client, void **storage) {
+  (void)tap;
+  *storage = client;
+}
 static void tap_finalize(MTAudioProcessingTapRef tap) {
   XaviAudioTap *state = MTAudioProcessingTapGetStorage(tap);
   xavi_eq_stream_drop(state->stream);
   free(state);
 }
 static void tap_prepare(MTAudioProcessingTapRef tap, CMItemCount maxFrames, const AudioStreamBasicDescription *format) {
+  (void)maxFrames;
   ((XaviAudioTap *)MTAudioProcessingTapGetStorage(tap))->format = *format;
 }
-static void tap_unprepare(MTAudioProcessingTapRef tap) {}
+static void tap_unprepare(MTAudioProcessingTapRef tap) { (void)tap; }
 static void tap_process(MTAudioProcessingTapRef tap, CMItemCount requested,
     MTAudioProcessingTapFlags flags, AudioBufferList *buffers,
     CMItemCount *provided, MTAudioProcessingTapFlags *outFlags) {
+  (void)flags;
   OSStatus status = MTAudioProcessingTapGetSourceAudio(tap, requested, buffers, outFlags, NULL, provided);
   if (status != noErr) { *provided = 0; return; }
   XaviAudioTap *state = MTAudioProcessingTapGetStorage(tap);
@@ -168,6 +173,7 @@ void *xavi_player_open(const char *path, const void *control, char *error) {
       c.endObserver = [[NSNotificationCenter defaultCenter]
           addObserverForName:AVPlayerItemDidPlayToEndTimeNotification object:item
           queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            (void)note;
             XaviPlayback *p = weak;
             if (p && !p.closed && !p.seeking) p.ended = YES;
           }];
@@ -204,6 +210,7 @@ int xavi_player_command(void *ctx, int command, double value, char *error) {
         [c.player seekToTime:CMTimeMakeWithSeconds(value, 1000000)
             toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero
             completionHandler:^(BOOL finished) {
+              (void)finished;
               // AVFoundation can finish on a private queue. Publish only the
               // generation here; the next main-thread poll updates the state.
               // A pumped application loop need not drain GCD's main queue.

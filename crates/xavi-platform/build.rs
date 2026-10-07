@@ -20,6 +20,8 @@ fn main() {
             .file("src/player/apple.m")
             .flag("-fobjc-arc")
             .flag("-fblocks")
+            // Clang versions differ on whether -Wextra includes this warning.
+            .flag("-Wunused-parameter")
             .warnings_into_errors(true)
             .compile("xavi_apple_player");
         for framework in [
