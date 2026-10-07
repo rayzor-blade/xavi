@@ -1,0 +1,8 @@
+[package]
+name = "xavi-core"
+version.workspace = true
+edition.workspace = true
+description = "Runtime-neutral media storage, layouts and resource handles for xavi"
+
+[lints]
+workspace = true

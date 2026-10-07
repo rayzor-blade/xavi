@@ -1,0 +1,11 @@
+[package]
+name = "xavi-backend"
+version.workspace = true
+edition.workspace = true
+description = "Shared CPU media operations for xavi runtime adapters"
+
+[dependencies]
+xavi-core.workspace = true
+
+[lints]
+workspace = true
