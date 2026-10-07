@@ -1,0 +1,592 @@
+// xavi's media contract for Ash, Rayzor and Caribou.
+// A selected WebCodecs / Media Capture surface, not a full browser API snapshot.
+// References checked 2026-10-07:
+// https://www.w3.org/TR/2026/WD-webcodecs-20261007/
+// https://www.w3.org/TR/mediacapture-streams/
+// https://www.w3.org/TR/geometry-1/
+// https://webidl.spec.whatwg.org/#idl-DOMException
+//
+// As in xgpu, a companion Rust declaration selects the native API and maps
+// resources, records, errors and futures onto each runtime's carriers. This IDL
+// alone does not generate a complete native implementation. Constructors,
+// static capability queries and callbacks need explicit adapter support in
+// the current x-idl generator.
+// EventTarget, DOM image inputs, shared buffers and transfer lists are omitted.
+// MediaDemuxer is an xavi extension, not a browser-provided interface.
+//
+// Timestamps are signed presentation times in microseconds, durations are
+// nonnegative microseconds, offsets/strides are bytes, and bitrates are bits/s.
+// Native adapters must range-check integers before converting ABI carriers;
+// [EnforceRange] expresses the contract, not a check x-idl currently emits.
+// Input buffers are borrowed for the call. Constructors and configure() must
+// snapshot their bytes before returning. clone() retains the same immutable
+// media resource; close() releases only that object's reference.
+// copyTo destinations map to BufferMut, never a read-only Buffer. An async
+// copy retains its destination until settlement; callers must not mutate it
+// meanwhile. The browser wire lends views of guest memory. If a browser API
+// requires an unshared buffer, its adapter must stage bytes and copy writes back
+// before settling the future; a plain wire call does not provide that staging.
+
+// --- Shared value types ---
+
+enum AudioSampleFormat {
+    "u8",
+    "s16",
+    "s32",
+    "f32",
+    "u8-planar",
+    "s16-planar",
+    "s32-planar",
+    "f32-planar"
+};
+
+// The initial 8-bit pixel-format surface. Enumeration does not imply that a
+// platform supports every format or every conversion between formats.
+enum VideoPixelFormat {
+    "I420",
+    "I420A",
+    "I422",
+    "I444",
+    "NV12",
+    "RGBA",
+    "RGBX",
+    "BGRA",
+    "BGRX"
+};
+
+enum CodecState {
+    "unconfigured",
+    "configured",
+    "closed"
+};
+
+// Audio and video deliberately share this enum in xavi.
+enum EncodedChunkType {
+    "key",
+    "delta"
+};
+
+enum HardwareAcceleration {
+    "no-preference",
+    "prefer-hardware",
+    "prefer-software"
+};
+
+enum LatencyMode {
+    "quality",
+    "realtime"
+};
+
+// A buffer view means its addressed byte range, not its entire backing buffer.
+// Strings are not binary media data. SharedArrayBuffer is outside this subset.
+typedef (ArrayBuffer or ArrayBufferView) BufferSource;
+
+// Attribute-bearing typedefs follow xgpu's convention and are understood by
+// the local weedle parser as well as x-idl's native dictionary importer.
+typedef [EnforceRange] unsigned long MediaSize;
+typedef [EnforceRange] long long MediaTimestamp;
+typedef [EnforceRange] unsigned long long MediaDuration;
+typedef [EnforceRange] unsigned long long MediaBitrate;
+
+// Only the geometry and error members used by this API are declared here.
+// These names denote the standard browser objects when running in a page.
+dictionary DOMRectInit {
+    unrestricted double x = 0;
+    unrestricted double y = 0;
+    unrestricted double width = 0;
+    unrestricted double height = 0;
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface DOMRectReadOnly {
+    readonly attribute unrestricted double x;
+    readonly attribute unrestricted double y;
+    readonly attribute unrestricted double width;
+    readonly attribute unrestricted double height;
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface DOMException {
+    readonly attribute DOMString name;
+    readonly attribute DOMString message;
+};
+
+// Preserve color information independently of the pixel layout. Native GPU
+// integration can use it to build xgpu's external-texture conversion data;
+// GPU handles and runtime object layouts do not belong in this contract.
+enum VideoColorPrimaries {
+    "bt709",
+    "bt470bg",
+    "smpte170m",
+    "bt2020",
+    "smpte432"
+};
+
+enum VideoTransferCharacteristics {
+    "bt709",
+    "smpte170m",
+    "iec61966-2-1",
+    "linear",
+    "pq",
+    "hlg"
+};
+
+enum VideoMatrixCoefficients {
+    "rgb",
+    "bt709",
+    "bt470bg",
+    "smpte170m",
+    "bt2020-ncl"
+};
+
+dictionary VideoColorSpaceInit {
+    VideoColorPrimaries? primaries = null;
+    VideoTransferCharacteristics? transfer = null;
+    VideoMatrixCoefficients? matrix = null;
+    boolean? fullRange = null;
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface VideoColorSpace {
+    constructor(optional VideoColorSpaceInit init = {});
+
+    readonly attribute VideoColorPrimaries? primaries;
+    readonly attribute VideoTransferCharacteristics? transfer;
+    readonly attribute VideoMatrixCoefficients? matrix;
+    readonly attribute boolean? fullRange;
+
+    VideoColorSpaceInit toJSON();
+};
+
+// --- Codec configurations and capability discovery ---
+
+// Codec strings follow the WebCodecs codec registry. Configurations must have
+// a nonempty codec; channel counts, sample rates and dimensions must be positive.
+// A platform may reject a valid configuration it cannot implement.
+dictionary AudioDecoderConfig {
+    required DOMString codec;
+    required MediaSize sampleRate;
+    required MediaSize numberOfChannels;
+    BufferSource description;
+};
+
+dictionary VideoDecoderConfig {
+    required DOMString codec;
+    BufferSource description;
+    // Supply each width/height pair together, or omit both members.
+    MediaSize codedWidth;
+    MediaSize codedHeight;
+    MediaSize displayAspectWidth;
+    MediaSize displayAspectHeight;
+    VideoColorSpaceInit colorSpace;
+    HardwareAcceleration hardwareAcceleration = "no-preference";
+    boolean optimizeForLatency = false;
+};
+
+dictionary AudioEncoderConfig {
+    required DOMString codec;
+    required MediaSize sampleRate;
+    required MediaSize numberOfChannels;
+    MediaBitrate bitrate;
+};
+
+dictionary VideoEncoderConfig {
+    required DOMString codec;
+    required MediaSize width;
+    required MediaSize height;
+    // Supply both display dimensions or neither.
+    MediaSize displayWidth;
+    MediaSize displayHeight;
+    MediaBitrate bitrate;
+    // Finite and positive when supplied.
+    double framerate;
+    HardwareAcceleration hardwareAcceleration = "no-preference";
+    LatencyMode latencyMode = "quality";
+};
+
+dictionary VideoEncoderEncodeOptions {
+    boolean keyFrame = false;
+};
+
+// Support reports include the recognized configuration so callers can detect
+// ignored fields. Unsupported configurations resolve with supported=false;
+// malformed configurations reject. A support result does not reserve hardware.
+dictionary AudioDecoderSupport {
+    required boolean supported;
+    required AudioDecoderConfig config;
+};
+
+dictionary VideoDecoderSupport {
+    required boolean supported;
+    required VideoDecoderConfig config;
+};
+
+dictionary AudioEncoderSupport {
+    required boolean supported;
+    required AudioEncoderConfig config;
+};
+
+dictionary VideoEncoderSupport {
+    required boolean supported;
+    required VideoEncoderConfig config;
+};
+
+// --- Output callbacks ---
+
+// Callbacks describe the WebCodecs-facing contract. x-idl currently models
+// them as opaque: native declarations need an explicit delivery mechanism,
+// and a browser agent must install the callbacks. A backend worker must not
+// invoke guest closures directly; delivery belongs to the owning runtime.
+// The recipient owns output AudioData/VideoFrame references and closes them.
+callback AudioFrameOutputCallback = undefined (AudioData output);
+callback VideoFrameOutputCallback = undefined (VideoFrame output);
+callback WebCodecsErrorCallback = undefined (DOMException error);
+
+// Encoder output may announce a new decoder configuration, including codec
+// initialization bytes. Apply it before decoding the associated chunk.
+dictionary EncodedAudioChunkMetadata {
+    AudioDecoderConfig decoderConfig;
+};
+
+dictionary EncodedVideoChunkMetadata {
+    VideoDecoderConfig decoderConfig;
+};
+
+callback EncodedAudioChunkOutputCallback = undefined (
+    EncodedAudioChunk output,
+    optional EncodedAudioChunkMetadata metadata = {}
+);
+
+callback EncodedVideoChunkOutputCallback = undefined (
+    EncodedVideoChunk output,
+    optional EncodedVideoChunkMetadata metadata = {}
+);
+
+dictionary AudioDecoderInit {
+    required AudioFrameOutputCallback output;
+    required WebCodecsErrorCallback error;
+};
+
+dictionary VideoDecoderInit {
+    required VideoFrameOutputCallback output;
+    required WebCodecsErrorCallback error;
+};
+
+dictionary AudioEncoderInit {
+    required EncodedAudioChunkOutputCallback output;
+    required WebCodecsErrorCallback error;
+};
+
+dictionary VideoEncoderInit {
+    required EncodedVideoChunkOutputCallback output;
+    required WebCodecsErrorCallback error;
+};
+
+// --- Raw audio ---
+
+[Exposed=(Window,DedicatedWorker)]
+interface AudioData {
+    constructor(AudioDataInit init);
+
+    // Null after close(); clone/copy/allocation operations then fail.
+    readonly attribute AudioSampleFormat? format;
+    readonly attribute float sampleRate;
+    readonly attribute unsigned long numberOfFrames;
+    readonly attribute unsigned long numberOfChannels;
+    readonly attribute unsigned long long duration;
+    readonly attribute long long timestamp;
+
+    unsigned long allocationSize(AudioDataCopyToOptions options);
+    undefined copyTo(BufferSource destination, AudioDataCopyToOptions options);
+    AudioData clone();
+    // Idempotent; other clones remain usable.
+    undefined close();
+};
+
+dictionary AudioDataInit {
+    required AudioSampleFormat format;
+    // Finite and positive; frame and channel counts must also be positive.
+    required float sampleRate;
+    required MediaSize numberOfFrames;
+    required MediaSize numberOfChannels;
+    required MediaTimestamp timestamp;
+    // Tightly packed interleaved samples, or consecutive channel planes.
+    // Must contain enough samples for every frame and channel.
+    required BufferSource data;
+};
+
+dictionary AudioDataCopyToOptions {
+    // Plane in the OUTPUT format: 0 for interleaved, channel index for planar.
+    required MediaSize planeIndex;
+    MediaSize frameOffset = 0;
+    // Omission copies the remaining frames; ranges must fit the source.
+    MediaSize frameCount;
+    AudioSampleFormat format;
+};
+
+// --- Raw video ---
+
+[Exposed=(Window,DedicatedWorker)]
+interface VideoFrame {
+    // The WebCodecs raw-buffer constructor; DOM image constructors are omitted.
+    constructor(BufferSource data, VideoFrameBufferInit init);
+
+    // Can be null for an opaque native/GPU surface, or after close().
+    readonly attribute VideoPixelFormat? format;
+    readonly attribute unsigned long codedWidth;
+    readonly attribute unsigned long codedHeight;
+    readonly attribute DOMRectReadOnly? codedRect;
+    readonly attribute DOMRectReadOnly? visibleRect;
+    readonly attribute unsigned long displayWidth;
+    readonly attribute unsigned long displayHeight;
+    readonly attribute unsigned long long? duration;
+    readonly attribute long long timestamp;
+    readonly attribute VideoColorSpace colorSpace;
+
+    unsigned long allocationSize(optional VideoFrameCopyToOptions options = {});
+    // Resolves with the actual destination layouts once all writes finish.
+    Promise<sequence<PlaneLayout>> copyTo(
+        BufferSource destination,
+        optional VideoFrameCopyToOptions options = {}
+    );
+    VideoFrame clone();
+    // Idempotent. GPU-backed resources must also be released when no longer used.
+    undefined close();
+};
+
+dictionary VideoFrameBufferInit {
+    required VideoPixelFormat format;
+    required MediaSize codedWidth;
+    required MediaSize codedHeight;
+    required MediaTimestamp timestamp;
+    MediaDuration duration;
+    // Omission means tightly packed planes in pixel-format order.
+    sequence<PlaneLayout> layout;
+    // Omission selects the coded rectangle. Must be integral, nonempty,
+    // nonnegative and within the coded dimensions.
+    DOMRectInit visibleRect;
+    // Supply both or neither. Omission uses the visible dimensions.
+    MediaSize displayWidth;
+    MediaSize displayHeight;
+    VideoColorSpaceInit colorSpace;
+};
+
+dictionary VideoFrameCopyToOptions {
+    // Defaults to visibleRect. Must additionally align to the source samples.
+    DOMRectInit rect;
+    // Exactly one entry per output plane; omitted means tightly packed.
+    sequence<PlaneLayout> layout;
+    // Omission preserves the source format. Unsupported conversion rejects.
+    VideoPixelFormat format;
+};
+
+dictionary PlaneLayout {
+    required MediaSize offset;
+    required MediaSize stride;
+};
+
+// Layout validation belongs to the backend: planes must not overlap, strides
+// must hold a row, and offset + stride * (rows - 1) + rowBytes must fit the
+// supplied buffer, with checked arithmetic. allocationSize and copyTo must use
+// identical options. Padding bytes are not pixel data.
+
+// --- Encoded data ---
+
+[Exposed=(Window,DedicatedWorker)]
+interface EncodedAudioChunk {
+    constructor(EncodedAudioChunkInit init);
+
+    readonly attribute EncodedChunkType type;
+    readonly attribute long long timestamp;
+    readonly attribute unsigned long long? duration;
+    readonly attribute unsigned long byteLength;
+
+    undefined copyTo(BufferSource destination);
+};
+
+dictionary EncodedAudioChunkInit {
+    required EncodedChunkType type;
+    required MediaTimestamp timestamp;
+    MediaDuration duration;
+    required BufferSource data;
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface EncodedVideoChunk {
+    constructor(EncodedVideoChunkInit init);
+
+    readonly attribute EncodedChunkType type;
+    readonly attribute long long timestamp;
+    readonly attribute unsigned long long? duration;
+    readonly attribute unsigned long byteLength;
+
+    undefined copyTo(BufferSource destination);
+};
+
+dictionary EncodedVideoChunkInit {
+    required EncodedChunkType type;
+    required MediaTimestamp timestamp;
+    MediaDuration duration;
+    required BufferSource data;
+};
+
+// --- Codecs ---
+
+// configure() transitions unconfigured -> configured. encode/decode/flush
+// require configured state. Input media resources are retained before the
+// call returns, so the caller can close a submitted frame immediately.
+// flush() resolves after preceding work and its output callbacks complete.
+// reset() discards pending work, aborts pending flushes and becomes unconfigured.
+// close() also releases the codec and becomes terminal; operations on a closed
+// codec raise InvalidStateError. Fatal asynchronous errors close the codec and
+// reach the error callback. Decoder input is in decode order, not PTS order;
+// the first chunk after configure/reset/flush must be a key chunk.
+// Queue sizes count pending input requests, not output frames or total latency.
+
+[Exposed=(Window,DedicatedWorker)]
+interface AudioDecoder {
+    constructor(AudioDecoderInit init);
+
+    readonly attribute CodecState state;
+    readonly attribute unsigned long decodeQueueSize;
+
+    undefined configure(AudioDecoderConfig config);
+    undefined decode(EncodedAudioChunk chunk);
+    Promise<undefined> flush();
+    undefined reset();
+    undefined close();
+    static Promise<AudioDecoderSupport> isConfigSupported(AudioDecoderConfig config);
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface VideoDecoder {
+    constructor(VideoDecoderInit init);
+
+    readonly attribute CodecState state;
+    readonly attribute unsigned long decodeQueueSize;
+
+    undefined configure(VideoDecoderConfig config);
+    undefined decode(EncodedVideoChunk chunk);
+    Promise<undefined> flush();
+    undefined reset();
+    undefined close();
+    static Promise<VideoDecoderSupport> isConfigSupported(VideoDecoderConfig config);
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface AudioEncoder {
+    constructor(AudioEncoderInit init);
+
+    readonly attribute CodecState state;
+    readonly attribute unsigned long encodeQueueSize;
+
+    undefined configure(AudioEncoderConfig config);
+    undefined encode(AudioData data);
+    Promise<undefined> flush();
+    undefined reset();
+    undefined close();
+    static Promise<AudioEncoderSupport> isConfigSupported(AudioEncoderConfig config);
+};
+
+[Exposed=(Window,DedicatedWorker)]
+interface VideoEncoder {
+    constructor(VideoEncoderInit init);
+
+    readonly attribute CodecState state;
+    readonly attribute unsigned long encodeQueueSize;
+
+    undefined configure(VideoEncoderConfig config);
+    undefined encode(VideoFrame frame, optional VideoEncoderEncodeOptions options = {});
+    Promise<undefined> flush();
+    undefined reset();
+    undefined close();
+    static Promise<VideoEncoderSupport> isConfigSupported(VideoEncoderConfig config);
+};
+
+// --- Capture and stream identity ---
+
+// Streams group tracks; they do not themselves decode, render or drain frames.
+// A frame reader/writer and playback clock need a separate xavi extension.
+enum MediaStreamTrackState {
+    "live",
+    "ended"
+};
+
+[Exposed=Window]
+interface MediaStreamTrack {
+    readonly attribute DOMString kind; // "audio" or "video"
+    readonly attribute DOMString id;
+    readonly attribute DOMString label;
+    // Disabled live tracks provide silence/black; disabling is not stopping.
+    attribute boolean enabled;
+    readonly attribute boolean muted;
+    readonly attribute MediaStreamTrackState readyState;
+
+    // Independent track identity sharing the same source.
+    MediaStreamTrack clone();
+    // Idempotent. Ends this track, without stopping other clones of the source.
+    undefined stop();
+};
+
+[Exposed=Window]
+interface MediaStream {
+    constructor();
+    constructor(MediaStream stream);
+    constructor(sequence<MediaStreamTrack> tracks);
+
+    readonly attribute DOMString id;
+    readonly attribute boolean active;
+
+    sequence<MediaStreamTrack> getAudioTracks();
+    sequence<MediaStreamTrack> getVideoTracks();
+    sequence<MediaStreamTrack> getTracks();
+    MediaStreamTrack? getTrackById(DOMString trackId);
+    undefined addTrack(MediaStreamTrack track);
+    // Removing a track does not stop it. The constructors also share tracks.
+    undefined removeTrack(MediaStreamTrack track);
+    // Unlike the constructors, clone() clones each track as well as the stream.
+    MediaStream clone();
+};
+
+[Exposed=Window]
+interface MediaDevices {
+    // The host provides this service and mediates capture permissions.
+    // Both constraints false is invalid. Errors reject; denial is not an
+    // empty stream. Device selection and detailed constraints are out of scope.
+    Promise<MediaStream> getUserMedia(optional MediaStreamConstraints constraints = {});
+};
+
+dictionary MediaStreamConstraints {
+    boolean video = false;
+    boolean audio = false;
+};
+
+// --- xavi extension: file demuxing ---
+
+// The initial demuxer selects at most one audio and one video track. It splits
+// container packets without decoding them. Network protocols and supported
+// containers are backend capabilities, not implied by accepting a URL.
+[Exposed=(Window,DedicatedWorker)]
+interface MediaDemuxer {
+    constructor(USVString fileUrl);
+
+    // Wait for container initialization. A missing selected track rejects
+    // with NotFoundError; malformed/unsupported media rejects separately.
+    // The browser bridge must marshal description bytes explicitly; the current
+    // generic wire cannot encode byte buffers inside a returned dictionary.
+    Promise<AudioDecoderConfig> getAudioConfig();
+    Promise<VideoDecoderConfig> getVideoConfig();
+
+    // In decode order with presentation timestamps. Null is successful EOF,
+    // never "not ready" or an I/O error. Missing tracks reject NotFoundError.
+    // Keep at most one outstanding read per selected track; another rejects
+    // InvalidStateError. Read both selected tracks to avoid building a backlog.
+    // Native bindings MUST preserve successful null separately from rejection:
+    // x-idl's default Promise<T?> -> Future<T> lowering is insufficient for EOF.
+    Promise<EncodedAudioChunk?> readAudioChunk();
+    Promise<EncodedVideoChunk?> readVideoChunk();
+
+    // Idempotent. Cancels pending operations with AbortError and releases I/O.
+    // Later operations reject InvalidStateError. Returned chunks stay valid.
+    undefined close();
+};
