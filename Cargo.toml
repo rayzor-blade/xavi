@@ -8,6 +8,10 @@ edition = "2024"
 
 [workspace.dependencies]
 xavi-core = { path = "crates/xavi-core" }
+xavi-backend = { path = "crates/xavi-backend" }
+xavi-bindgen = { path = "crates/xavi-bindgen" }
+# Develop against the same generator checkout as the sibling runtime projects.
+x_idl = { path = "../x-idl" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

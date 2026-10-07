@@ -3,8 +3,8 @@
 //! Like xgpu, resources live in Rust and adapters pass integer handles. This
 //! layer has no VM types or guest callbacks: the generated ABI wraps it and
 //! translates its errors, records and byte slices into the runtime's carriers.
-//! Unlike xgpu's code that references generated types, these operations compile
-//! directly as a Rust library; no source installation is necessary yet.
+//! The operations compile directly as a Rust library. [`install`] supplies the
+//! small adapter module that translates x-idl's generated records and carriers.
 //!
 //! Create one backend per adapter context, and never mix its handles with another
 //! context's. Copies run without holding the table lock. An Arc acquired for
@@ -35,6 +35,7 @@ struct Resources {
     video: Slab<VideoFrame>,
     encoded_audio: Slab<EncodedChunk>,
     encoded_video: Slab<EncodedChunk>,
+    layouts: Slab<Vec<PlaneLayout>>,
 }
 
 /// Thread-safe resource tables. No global state, runtime allocation or callbacks.
@@ -56,13 +57,14 @@ impl MediaBackend {
                 video: Slab::new(Kind::VideoFrame),
                 encoded_audio: Slab::new(Kind::EncodedAudioChunk),
                 encoded_video: Slab::new(Kind::EncodedVideoChunk),
+                layouts: Slab::new(Kind::PlaneLayouts),
             }),
         }
     }
 
     pub fn create_audio(&self, descriptor: AudioDescriptor, data: &[u8]) -> Result<i32> {
         let audio = AudioData::new(descriptor, data)?;
-        self.resources()?.audio.insert(audio)
+        self.retain_audio(Arc::new(audio))
     }
 
     pub fn create_video(
@@ -72,7 +74,7 @@ impl MediaBackend {
         layout: Option<&[PlaneLayout]>,
     ) -> Result<i32> {
         let video = VideoFrame::new(descriptor, data, layout)?;
-        self.resources()?.video.insert(video)
+        self.retain_video(Arc::new(video))
     }
 
     pub fn create_audio_chunk(
@@ -83,7 +85,7 @@ impl MediaBackend {
         data: &[u8],
     ) -> Result<i32> {
         let chunk = EncodedChunk::new(kind, timestamp, duration, data)?;
-        self.resources()?.encoded_audio.insert(chunk)
+        self.retain_audio_chunk(Arc::new(chunk))
     }
 
     pub fn create_video_chunk(
@@ -94,7 +96,24 @@ impl MediaBackend {
         data: &[u8],
     ) -> Result<i32> {
         let chunk = EncodedChunk::new(kind, timestamp, duration, data)?;
-        self.resources()?.encoded_video.insert(chunk)
+        self.retain_video_chunk(Arc::new(chunk))
+    }
+
+    /// Publish a retained or streamed resource without copying its media bytes.
+    pub fn retain_audio(&self, value: Arc<AudioData>) -> Result<i32> {
+        self.resources()?.audio.insert_shared(value)
+    }
+
+    pub fn retain_video(&self, value: Arc<VideoFrame>) -> Result<i32> {
+        self.resources()?.video.insert_shared(value)
+    }
+
+    pub fn retain_audio_chunk(&self, value: Arc<EncodedChunk>) -> Result<i32> {
+        self.resources()?.encoded_audio.insert_shared(value)
+    }
+
+    pub fn retain_video_chunk(&self, value: Arc<EncodedChunk>) -> Result<i32> {
+        self.resources()?.encoded_video.insert_shared(value)
     }
 
     pub fn audio(&self, handle: i32) -> Result<Arc<AudioData>> {
@@ -172,6 +191,18 @@ impl MediaBackend {
         self.video_chunk(handle)?.copy_to(destination)
     }
 
+    /// Retain a native copy result until its recipient closes the collection.
+    pub fn create_plane_layouts(&self, layouts: Vec<PlaneLayout>) -> Result<i32> {
+        self.resources()?.layouts.insert(layouts)
+    }
+
+    pub fn plane_layouts(&self, handle: i32) -> Result<Arc<Vec<PlaneLayout>>> {
+        self.resources()?
+            .layouts
+            .get(handle)
+            .ok_or_else(Error::closed)
+    }
+
     /// Drops this handle's reference. Finalizers and explicit close can both call
     /// this: zero, stale handles and repeated releases are harmless. Other
     /// clones and already acquired resources remain alive.
@@ -190,6 +221,9 @@ impl MediaBackend {
             Some(Kind::EncodedVideoChunk) => {
                 resources.encoded_video.remove(handle);
             }
+            Some(Kind::PlaneLayouts) => {
+                resources.layouts.remove(handle);
+            }
             None => {}
         }
         Ok(())
@@ -197,7 +231,11 @@ impl MediaBackend {
 
     pub fn live_resources(&self) -> Result<usize> {
         let r = self.resources()?;
-        Ok(r.audio.len() + r.video.len() + r.encoded_audio.len() + r.encoded_video.len())
+        Ok(r.audio.len()
+            + r.video.len()
+            + r.encoded_audio.len()
+            + r.encoded_video.len()
+            + r.layouts.len())
     }
 
     fn resources(&self) -> Result<MutexGuard<'_, Resources>> {
@@ -205,4 +243,24 @@ impl MediaBackend {
             .lock()
             .map_err(|_| Error::new(ErrorKind::InvalidState, "media resource lock is poisoned"))
     }
+}
+
+/// Installs the shared native adapter beneath `out`, for inclusion as
+/// `mod backend` beside xavi-bindgen's generated model. The host provides
+/// `with_media(|media: &MediaBackend| ...)`, selecting one stable backend per
+/// runtime context, and the x-idl carriers at the model's crate root.
+///
+/// Calls, future completion and context teardown must run on the owning runtime
+/// thread. Buffers must remain pinned and exclusively writable during copies.
+/// No guest callback may run while a buffer is borrowed. CPU copies complete
+/// before returning, including VideoFrame.copyTo's resolved future. Explicit
+/// close is required; dropping generated wrappers does not release handles.
+/// Workers should retain core Arcs and use bounded `stream` channels; guest
+/// objects and future settlement stay on the runtime thread.
+pub fn install(out: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
+    let root = out.as_ref().join("xavi_backend");
+    std::fs::create_dir_all(&root)?;
+    let path = root.join("native.rs");
+    std::fs::write(&path, include_str!("template/native.rs"))?;
+    Ok(path)
 }

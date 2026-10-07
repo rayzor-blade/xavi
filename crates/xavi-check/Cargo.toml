@@ -1,0 +1,13 @@
+[package]
+name = "xavi-check"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[build-dependencies]
+xavi-backend.workspace = true
+xavi-bindgen.workspace = true
+
+[dependencies]
+xavi-backend.workspace = true
+xavi-core.workspace = true

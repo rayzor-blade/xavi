@@ -22,6 +22,7 @@ pub enum Kind {
     VideoFrame = 2,
     EncodedAudioChunk = 3,
     EncodedVideoChunk = 4,
+    PlaneLayouts = 5,
 }
 
 impl Kind {
@@ -34,6 +35,7 @@ impl Kind {
             2 => Some(Self::VideoFrame),
             3 => Some(Self::EncodedAudioChunk),
             4 => Some(Self::EncodedVideoChunk),
+            5 => Some(Self::PlaneLayouts),
             _ => None,
         }
     }

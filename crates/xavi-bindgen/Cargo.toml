@@ -1,0 +1,14 @@
+[package]
+name = "xavi-bindgen"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+x_idl.workspace = true
+
+[dev-dependencies]
+syn = { version = "2", features = ["full"] }
+
+[lints]
+workspace = true
