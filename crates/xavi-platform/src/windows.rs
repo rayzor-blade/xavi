@@ -10,6 +10,8 @@ use windows::Win32::System::Variant::VARIANT;
 use windows::core::{GUID, Interface};
 use xavi_core::codec::Receive;
 use xavi_core::{Error, ErrorKind, Result};
+#[path = "mux/windows.rs"]
+pub(crate) mod mux;
 
 fn failure(e: impl std::fmt::Display) -> Error {
     Error::new(ErrorKind::InvalidState, format!("Media Foundation: {e}"))

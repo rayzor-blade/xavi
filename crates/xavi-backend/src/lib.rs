@@ -13,8 +13,8 @@
 //! the IDL's future, resolved only after the destination writes finish.
 //!
 //! [`codec`] exposes native audio/video sessions for Rust hosts. Runtime codec
-//! bindings, container I/O, device capture, browser agents and GPU surfaces are
-//! separate work.
+//! bindings, container reading, device capture, browser agents and GPU surfaces
+//! are separate work. [`mux`] writes encoded audio/video to native MP4 files.
 //!
 //! [`stream::channel`] carries retained frames/chunks or incremental byte input
 //! with bounded capacity and backpressure. Sending `backend.audio(handle)?`
@@ -23,6 +23,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 pub mod codec;
+pub mod mux;
 
 use xavi_core::handles::{Kind, Slab};
 pub use xavi_core::stream;

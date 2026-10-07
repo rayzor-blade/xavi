@@ -12,7 +12,7 @@
 // static capability queries and callbacks need explicit adapter support in
 // the current x-idl generator.
 // EventTarget, DOM image inputs, shared buffers and transfer lists are omitted.
-// MediaDemuxer is an xavi extension, not a browser-provided interface.
+// MediaDemuxer and MediaMuxer are xavi extensions, not browser-provided APIs.
 //
 // Timestamps are signed presentation times in microseconds, durations are
 // nonnegative microseconds, offsets/strides are bytes, and bitrates are bits/s.
@@ -588,5 +588,51 @@ interface MediaDemuxer {
 
     // Idempotent. Cancels pending operations with AbortError and releases I/O.
     // Later operations reject InvalidStateError. Returned chunks stay valid.
+    undefined close();
+};
+
+// --- xavi extension: native MP4 writing ---
+
+dictionary MediaMuxerConfig {
+    // At least one track is required. Codec initialization bytes must already
+    // be available, normally from the first encoder output's decoderConfig.
+    // The initial native profile accepts raw AAC-LC and length-prefixed AVC
+    // Baseline. Track formats stay fixed for the lifetime of a file.
+    AudioDecoderConfig audio;
+    VideoDecoderConfig video;
+    // One origin for both tracks, mapped to file time zero. Inputs before this
+    // point reject; relative A/V offsets are preserved. No automatic trimming
+    // of AAC encoder delay or padding is performed by this initial profile.
+    MediaTimestamp timestampOrigin = 0;
+    // Positive microseconds. Used only for video chunks with unknown duration.
+    MediaDuration defaultVideoDuration;
+};
+
+// This contract needs a host worker and explicit native bindings. It is not
+// selected by media.api.rs yet. A browser host without file-writing capability
+// rejects create() with NotSupportedError.
+[Exposed=(Window,DedicatedWorker)]
+interface MediaMuxer {
+    // Local seekable output only. Never overwrites an existing destination.
+    // The host stages privately beside the target and publishes only on finish.
+    static Promise<MediaMuxer> create(USVString fileUrl, MediaMuxerConfig config);
+
+    // Retain input until accepted. Backpressure delays settlement; it never
+    // drops a packet. At most one outstanding write per track. Feed both tracks
+    // incrementally, with strictly increasing PTS per track. The first video
+    // packet must be a key packet. PTS = DTS in the initial Baseline profile.
+    // AAC duration, if present, must describe 1024 frames at the track rate.
+    // Each configured track must receive at least one packet.
+    Promise<undefined> writeAudioChunk(EncodedAudioChunk chunk);
+    Promise<undefined> writeVideoChunk(EncodedVideoChunk chunk);
+    // End a shorter track promptly so it cannot hold back the other track.
+    Promise<undefined> endAudioTrack();
+    Promise<undefined> endVideoTrack();
+    // End both tracks, drain native I/O and publish the finalized container.
+    // Repeated completion is harmless; overlapping finish calls must share
+    // completion or reject InvalidStateError, never start another finalization.
+    Promise<undefined> finish();
+    // Abort pending work and delete the private partial file. Idempotent.
+    // A successfully published file is retained. Future operations reject.
     undefined close();
 };

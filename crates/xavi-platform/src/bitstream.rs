@@ -2,6 +2,24 @@
 //! Media Foundation use Annex B; keep that conversion outside the core model.
 use xavi_core::{Error, Result};
 
+pub fn validate_access_unit(mut bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() {
+        return Err(Error::invalid("empty AVC access unit"));
+    }
+    while !bytes.is_empty() {
+        if bytes.len() < 4 {
+            return Err(Error::invalid("truncated AVC NAL length"));
+        }
+        let n = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        bytes = &bytes[4..];
+        if n == 0 || n > bytes.len() {
+            return Err(Error::invalid("invalid AVC NAL length"));
+        }
+        bytes = &bytes[n..];
+    }
+    Ok(())
+}
+
 pub fn parameter_sets(avcc: &[u8]) -> Result<(&[u8], &[u8])> {
     let bad = || Error::invalid("invalid AVC configuration");
     if avcc.len() < 11 || avcc[0] != 1 || (avcc[4] & 3) != 3 || (avcc[5] & 31) != 1 {

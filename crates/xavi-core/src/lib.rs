@@ -14,6 +14,7 @@ mod error;
 mod format;
 pub mod handles;
 mod layout;
+pub mod mux;
 pub mod stream;
 mod video;
 

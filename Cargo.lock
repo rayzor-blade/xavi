@@ -481,6 +481,7 @@ dependencies = [
  "cc",
  "libloading",
  "ndk",
+ "ndk-sys",
  "windows",
  "xavi-core",
 ]

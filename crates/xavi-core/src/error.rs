@@ -9,6 +9,7 @@ pub enum ErrorKind {
     ResourceExhausted,
     WouldBlock,
     Cancelled,
+    Io,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

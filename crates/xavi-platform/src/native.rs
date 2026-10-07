@@ -192,13 +192,13 @@ impl Drop for Native {
 
 #[cfg(target_os = "android")]
 #[path = "android.rs"]
-mod port;
+pub(crate) mod port;
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
-mod port;
+pub(crate) mod port;
 #[cfg(target_os = "linux")]
 #[path = "gstreamer.rs"]
-mod port;
+pub(crate) mod port;
 #[cfg(any(target_os = "android", target_os = "windows", target_os = "linux"))]
 pub(crate) use port::Backend as Native;
 

@@ -6,6 +6,8 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::{Arc, OnceLock};
 use xavi_core::codec::Receive;
 use xavi_core::{Error, ErrorKind, Result};
+#[path = "mux/gstreamer.rs"]
+pub(crate) mod mux;
 type Ptr = *mut c_void;
 const PCM_FORMAT: &str = if cfg!(target_endian = "big") {
     "S16BE"

@@ -278,3 +278,297 @@ fn discontinuous_pcm_requires_a_new_segment() {
     );
     assert_eq!(encoder.state(), CodecState::Closed);
 }
+
+#[test]
+fn native_mp4_muxes_encoded_tracks_and_only_publishes_a_finished_file() {
+    use xavi_core::mux::{Mp4Config, MuxState, Muxer, Track};
+    use xavi_platform::mux::NativeMuxer;
+    let mut audio = session::<AudioEncoder>();
+    audio
+        .configure(AudioEncoderConfig {
+            codec: AAC.into(),
+            sample_rate: 48000,
+            channels: 1,
+            bitrate: Some(96000),
+        })
+        .unwrap();
+    audio
+        .try_submit(Arc::new(
+            AudioData::new(
+                AudioDescriptor {
+                    format: AudioSampleFormat::S16,
+                    sample_rate: 48000.0,
+                    number_of_frames: 8192,
+                    number_of_channels: 1,
+                    timestamp: -5000,
+                },
+                &[0; 16384],
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    let mut audio_packets = Vec::new();
+    flush(&mut audio, &mut audio_packets);
+    let mut video = session::<VideoEncoder>();
+    video
+        .configure(VideoEncoderConfig {
+            codec: H264.into(),
+            width: 128,
+            height: 96,
+            bitrate: 500_000,
+            framerate: 30.0,
+        })
+        .unwrap();
+    let mut video_packets = Vec::new();
+    for i in 0..3 {
+        let mut d = VideoDescriptor::new(VideoPixelFormat::Bgra, 128, 96, -5000 + i * 33_333);
+        d.duration = Some(33_333);
+        video
+            .try_submit(VideoEncodeInput {
+                frame: Arc::new(
+                    VideoFrame::new(d, &[20, 80, 180, 255].repeat(128 * 96), None).unwrap(),
+                ),
+                key_frame: i == 0,
+            })
+            .unwrap();
+        pump(&mut video, &mut video_packets);
+    }
+    flush(&mut video, &mut video_packets);
+    let timestamp_origin = audio_packets[0]
+        .chunk
+        .timestamp()
+        .min(video_packets[0].chunk.timestamp());
+    let config = Mp4Config {
+        audio: audio_packets[0].decoder_config.clone(),
+        video: video_packets[0].decoder_config.clone(),
+        timestamp_origin,
+        default_video_duration: Some(33_333),
+    };
+    struct Temp(std::path::PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let temp = Temp(std::env::temp_dir().join(format!(
+            "xavi-native-mux-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+    std::fs::create_dir(&temp.0).unwrap();
+    let path = temp.0.join("recording with spaces 雪.mp4");
+    let mut writer = Muxer::<NativeMuxer>::create(&path, config.clone(), 2_000_000).unwrap();
+    assert!(!path.exists());
+    let tracks: [Vec<Arc<EncodedChunk>>; 2] = [
+        audio_packets.iter().map(|p| p.chunk.clone()).collect(),
+        video_packets.iter().map(|p| p.chunk.clone()).collect(),
+    ];
+    let mut index = [0; 2];
+    let mut ended = [false; 2];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ended.iter().all(|v| *v) {
+        assert!(
+            Instant::now() < deadline,
+            "muxer stalled on interleaved input"
+        );
+        for (i, track) in [Track::Audio, Track::Video].into_iter().enumerate() {
+            if ended[i] {
+                continue;
+            }
+            if let Some(packet) = tracks[i].get(index[i]) {
+                if writer.write(track, packet).unwrap() {
+                    index[i] += 1;
+                }
+            } else {
+                writer.end_track(track).unwrap();
+                ended[i] = true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    while !writer.finish().unwrap() {
+        assert!(!path.exists());
+        assert!(Instant::now() < deadline, "muxer finalization stalled");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(writer.state(), MuxState::Finished);
+    drop(writer);
+    let bytes = std::fs::read(&path).unwrap();
+    let top = mp4_boxes(&bytes);
+    assert!(top.iter().any(|(t, _)| *t == *b"ftyp"));
+    assert!(top.iter().any(|(t, b)| *t == *b"mdat" && !b.is_empty()));
+    let movie = top
+        .iter()
+        .find(|(t, _)| *t == *b"moov")
+        .expect("finalized movie index")
+        .1;
+    let mut counts = Vec::new();
+    sample_counts(movie, &mut counts);
+    counts.sort_unstable();
+    assert_eq!(counts.len(), 2);
+    assert_eq!(counts[0], video_packets.len() as u32);
+    // AVAssetWriter can prepend AAC decoder preroll and describe its exclusion
+    // through an edit list. Verify every submitted AAC access unit survives in
+    // order, and that the movie timeline retains the submitted duration.
+    let audio_track = mp4_boxes(movie)
+        .into_iter()
+        .filter(|(t, _)| t == b"trak")
+        .find(|(_, t)| &child(child(t, b"mdia"), b"hdlr")[8..12] == b"soun")
+        .unwrap()
+        .1;
+    let stored = track_samples(&bytes, audio_track);
+    let submitted: Vec<&[u8]> = audio_packets.iter().map(|p| p.chunk.bytes()).collect();
+    assert!(
+        stored.ends_with(&submitted),
+        "muxer must preserve encoded AAC bytes in order"
+    );
+    assert!(
+        bytes.windows(4).any(|w| w == b"esds"),
+        "AAC codec configuration must be present"
+    );
+    let header = child(movie, b"mvhd");
+    let (scale, duration) = if header[0] == 0 {
+        (
+            u32::from_be_bytes(header[12..16].try_into().unwrap()),
+            u64::from(u32::from_be_bytes(header[16..20].try_into().unwrap())),
+        )
+    } else {
+        (
+            u32::from_be_bytes(header[20..24].try_into().unwrap()),
+            u64::from_be_bytes(header[24..32].try_into().unwrap()),
+        )
+    };
+    let expected_end = tracks
+        .iter()
+        .flatten()
+        .map(|p| p.timestamp() + p.duration().unwrap_or(33_333) as i64 - timestamp_origin)
+        .max()
+        .unwrap();
+    let actual_end = (duration * 1_000_000 / u64::from(scale)) as i64;
+    assert!(
+        (actual_end - expected_end).abs() <= 2000,
+        "movie timeline changed: {actual_end} versus {expected_end}"
+    );
+    let cancelled = temp.0.join("cancelled.mp4");
+    let mut aborted = Muxer::<NativeMuxer>::create(&cancelled, config.clone(), 2_000_000).unwrap();
+    aborted.close();
+    assert!(!cancelled.exists());
+    assert!(Muxer::<NativeMuxer>::create(&path, config, 2_000_000).is_err());
+    assert_eq!(
+        std::fs::read_dir(&temp.0).unwrap().count(),
+        1,
+        "private staging files must be removed"
+    );
+}
+
+fn mp4_boxes(mut bytes: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut result = Vec::new();
+    while !bytes.is_empty() {
+        assert!(bytes.len() >= 8, "truncated MP4 box");
+        let size = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        let (size, header) = match size {
+            0 => (bytes.len(), 8),
+            1 => {
+                assert!(bytes.len() >= 16);
+                (
+                    u64::from_be_bytes(bytes[8..16].try_into().unwrap()) as usize,
+                    16,
+                )
+            }
+            n => (n, 8),
+        };
+        assert!(
+            size >= header && size <= bytes.len(),
+            "invalid MP4 box span"
+        );
+        result.push((bytes[4..8].try_into().unwrap(), &bytes[header..size]));
+        bytes = &bytes[size..];
+    }
+    result
+}
+fn sample_counts(bytes: &[u8], counts: &mut Vec<u32>) {
+    for (kind, data) in mp4_boxes(bytes) {
+        match &kind {
+            b"trak" | b"mdia" | b"minf" | b"stbl" => sample_counts(data, counts),
+            b"stsz" => {
+                assert!(data.len() >= 12);
+                counts.push(u32::from_be_bytes(data[8..12].try_into().unwrap()));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn child<'a>(bytes: &'a [u8], name: &[u8; 4]) -> &'a [u8] {
+    mp4_boxes(bytes)
+        .into_iter()
+        .find(|(t, _)| t == name)
+        .expect("required MP4 box")
+        .1
+}
+fn track_samples<'a>(file: &'a [u8], track: &[u8]) -> Vec<&'a [u8]> {
+    let table = child(child(child(track, b"mdia"), b"minf"), b"stbl");
+    let sizes = child(table, b"stsz");
+    let fixed = u32::from_be_bytes(sizes[4..8].try_into().unwrap()) as usize;
+    let count = u32::from_be_bytes(sizes[8..12].try_into().unwrap()) as usize;
+    let sizes: Vec<usize> = if fixed > 0 {
+        vec![fixed; count]
+    } else {
+        sizes[12..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| u32::from_be_bytes(*v) as usize)
+            .collect()
+    };
+    assert_eq!(sizes.len(), count);
+    let offsets = mp4_boxes(table)
+        .into_iter()
+        .find(|(t, _)| t == b"stco" || t == b"co64")
+        .unwrap();
+    let offsets: Vec<usize> = if offsets.0 == *b"stco" {
+        offsets.1[8..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| u32::from_be_bytes(*v) as usize)
+            .collect()
+    } else {
+        offsets.1[8..]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|v| u64::from_be_bytes(*v) as usize)
+            .collect()
+    };
+    let mapping: Vec<(usize, usize)> = child(table, b"stsc")[8..]
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|v| {
+            (
+                u32::from_be_bytes(v[..4].try_into().unwrap()) as usize,
+                u32::from_be_bytes(v[4..8].try_into().unwrap()) as usize,
+            )
+        })
+        .collect();
+    let mut samples = Vec::new();
+    for (index, mut offset) in offsets.into_iter().enumerate() {
+        let per_chunk = mapping
+            .iter()
+            .rev()
+            .find(|(start, _)| *start <= index + 1)
+            .unwrap()
+            .1;
+        for _ in 0..per_chunk {
+            let size = sizes[samples.len()];
+            samples.push(&file[offset..offset + size]);
+            offset += size;
+        }
+    }
+    assert_eq!(samples.len(), count);
+    samples
+}

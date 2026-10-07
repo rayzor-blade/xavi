@@ -7,7 +7,8 @@
 //! completes VideoToolbox callbacks before each native call returns. Audio
 //! accepts incremental PCM and retains the converter's history across inputs.
 //! AAC output includes converter priming/padding; gapless container trimming is
-//! not implemented. Native muxers and codec bindings to VMs are separate work.
+//! not implemented. [`mux`] writes encoded output to native MP4 containers;
+//! codec and muxer bindings to VMs still require host-worker integration.
 //!
 //! Backends: AudioToolbox/VideoToolbox on macOS and iOS, Media Foundation on
 //! Windows, NDK MediaCodec on Android API 28+, and system GStreamer 1.20+ on
@@ -30,6 +31,7 @@ use xavi_core::codec::*;
 use xavi_core::*;
 
 mod bitstream;
+pub mod mux;
 mod native;
 #[cfg(any(test, target_os = "android", target_os = "windows"))]
 mod pixels;
