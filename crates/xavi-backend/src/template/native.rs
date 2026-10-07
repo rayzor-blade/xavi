@@ -431,3 +431,49 @@ pub fn video_chunk_copy_to(this: i32, destination: BufferMut) {
 pub fn video_chunk_close(this: i32) {
     close(this, core::handles::Kind::EncodedVideoChunk);
 }
+
+pub fn player_open(path: Text) -> i32 {
+    call(|m| m.player_open(path.as_str()))
+}
+pub fn player_state(this: i32) -> i32 {
+    call(|m| m.with_player(this, |player| {
+        use xavi_backend::player::PlaybackState as State;
+        Ok(match player.info()?.state {
+            State::Opening => PlaybackState::Opening,
+            State::Paused => PlaybackState::Paused,
+            State::Playing => PlaybackState::Playing,
+            State::Buffering => PlaybackState::Buffering,
+            State::Ended => PlaybackState::Ended,
+        }.native())
+    }))
+}
+pub fn player_position(this: i32) -> f64 {
+    call(|m| m.with_player(this, |p| Ok(p.info()?.position)))
+}
+pub fn player_duration(this: i32) -> f64 {
+    call(|m| m.with_player(this, |p| Ok(p.info()?.duration)))
+}
+pub fn player_volume(this: i32) -> f64 {
+    call(|m| m.with_player(this, |p| Ok(p.info()?.volume)))
+}
+pub fn player_play(this: i32) {
+    call(|m| m.with_player(this, |p| p.play()))
+}
+pub fn player_pause(this: i32) {
+    call(|m| m.with_player(this, |p| p.pause()))
+}
+pub fn player_seek(this: i32, seconds: f64) {
+    call(|m| m.with_player(this, |p| p.seek(seconds)))
+}
+pub fn player_set_volume(this: i32, volume: f64) {
+    call(|m| m.with_player(this, |p| p.set_volume(volume)))
+}
+pub fn player_poll_frame(this: i32) -> bool {
+    call(|m| m.with_player(this, |p| p.poll_frame()))
+}
+pub fn player_take_frame(this: i32) -> i32 {
+    call(|m| m.player_take_frame(this))
+}
+pub fn player_close(this: i32) {
+    close(this, core::handles::Kind::MediaPlayer);
+}

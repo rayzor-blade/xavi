@@ -214,3 +214,35 @@ trait EncodedVideoChunk {
     #[native(video_chunk_close)]
     fn close(this: &EncodedVideoChunk);
 }
+
+#[idl("PlaybackState")]
+enum PlaybackState {}
+
+/// A native file player with audio output and one polled video frame.
+/// Drive on the main event-loop thread. Close each frame after uploading it.
+trait MediaPlayer {
+    #[native(player_open)]
+    fn open(path: Text) -> Box<MediaPlayer>;
+    #[native(player_state)]
+    fn state(this: &MediaPlayer) -> Enum<PlaybackState>;
+    #[native(player_position)]
+    fn position(this: &MediaPlayer) -> f64;
+    #[native(player_duration)]
+    fn duration(this: &MediaPlayer) -> f64;
+    #[native(player_volume)]
+    fn volume(this: &MediaPlayer) -> f64;
+    #[native(player_play)]
+    fn play(this: &MediaPlayer);
+    #[native(player_pause)]
+    fn pause(this: &MediaPlayer);
+    #[native(player_seek)]
+    fn seek(this: &MediaPlayer, seconds: f64);
+    #[native(player_set_volume)]
+    fn setVolume(this: &MediaPlayer, volume: f64);
+    #[native(player_poll_frame)]
+    fn pollFrame(this: &MediaPlayer) -> bool;
+    #[native(player_take_frame)]
+    fn takeFrame(this: &MediaPlayer) -> Box<VideoFrame>;
+    #[native(player_close)]
+    fn close(this: &MediaPlayer);
+}

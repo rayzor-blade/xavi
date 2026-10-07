@@ -483,5 +483,6 @@ dependencies = [
  "ndk",
  "ndk-sys",
  "windows",
+ "windows-core",
  "xavi-core",
 ]

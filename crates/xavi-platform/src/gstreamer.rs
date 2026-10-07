@@ -8,6 +8,8 @@ use xavi_core::codec::Receive;
 use xavi_core::{Error, ErrorKind, Result};
 #[path = "mux/gstreamer.rs"]
 pub(crate) mod mux;
+#[path = "player/gstreamer.rs"]
+pub(crate) mod player;
 type Ptr = *mut c_void;
 const PCM_FORMAT: &str = if cfg!(target_endian = "big") {
     "S16BE"
@@ -51,7 +53,7 @@ macro_rules! api {
         impl Api {
             unsafe fn load() -> std::result::Result<Self, String> {
                 let mut libraries = Vec::new();
-                for name in ["libgstreamer-1.0.so.0", "libgstapp-1.0.so.0", "libglib-2.0.so.0"] { libraries.push(unsafe { Library::new(name) }.map_err(|e| e.to_string())?); }
+                for name in ["libgstreamer-1.0.so.0", "libgstapp-1.0.so.0", "libglib-2.0.so.0", "libgobject-2.0.so.0"] { libraries.push(unsafe { Library::new(name) }.map_err(|e| e.to_string())?); }
                 Ok(Self { $( $name: *libraries.iter().find_map(|lib| unsafe { lib.get::<unsafe extern "C" fn($($arg),*) -> $ret>(concat!(stringify!($name), "\0").as_bytes()) }.ok()).ok_or(concat!("missing GStreamer symbol ", stringify!($name)))?, )+ _libraries: libraries })
             }
         }
@@ -73,7 +75,11 @@ api! {
     gst_caps_get_structure(Ptr, u32) -> Ptr;
     gst_structure_get_int(Ptr, *const c_char, *mut i32) -> i32;
     gst_structure_get_value(Ptr, *const c_char) -> Ptr;
-    gst_value_get_buffer(Ptr) -> *mut Buffer;
+    g_value_get_boxed(Ptr) -> Ptr;
+    g_value_get_object(Ptr) -> Ptr;
+    g_value_array_new(u32) -> Ptr;
+    g_value_array_get_nth(Ptr, u32) -> Ptr;
+    g_value_array_append(Ptr, Ptr) -> Ptr;
     gst_buffer_new_allocate(Ptr, usize, Ptr) -> *mut Buffer;
     gst_buffer_fill(*mut Buffer, usize, *const c_void, usize) -> usize;
     gst_buffer_extract(*mut Buffer, usize, *mut c_void, usize) -> usize;
@@ -83,9 +89,21 @@ api! {
     gst_app_src_push_buffer(Ptr, *mut Buffer) -> i32;
     gst_app_src_end_of_stream(Ptr) -> i32;
     gst_app_sink_try_pull_sample(Ptr, u64) -> Ptr;
+    gst_app_sink_try_pull_preroll(Ptr, u64) -> Ptr;
     gst_app_sink_is_eos(Ptr) -> i32;
     gst_sample_get_buffer(Ptr) -> *mut Buffer;
     gst_sample_get_caps(Ptr) -> Ptr;
+    gst_element_factory_make(*const c_char, *const c_char) -> Ptr;
+    gst_element_get_factory(Ptr) -> Ptr;
+    gst_plugin_feature_get_plugin_name(Ptr) -> *const c_char;
+    gst_object_get_name(Ptr) -> *mut c_char;
+    gst_element_query_position(Ptr, i32, *mut i64) -> i32;
+    gst_element_query_duration(Ptr, i32, *mut i64) -> i32;
+    gst_element_seek_simple(Ptr, i32, u32, i64) -> i32;
+    gst_filename_to_uri(*const c_char, *mut *mut GError) -> *mut c_char;
+    gst_message_parse_buffering(Ptr, *mut i32) -> ();
+    g_signal_connect_data(Ptr, *const c_char, Ptr, Ptr, Ptr, u32) -> usize;
+    g_object_ref_sink(Ptr) -> Ptr;
     g_error_free(*mut GError) -> ();
     g_free(Ptr) -> ();
 }
@@ -398,7 +416,7 @@ impl Backend {
             if self.config.mode == 3 {
                 let value = (self.api.gst_structure_get_value)(structure, c"codec_data".as_ptr());
                 if !value.is_null() {
-                    let desc = self.api.bytes((self.api.gst_value_get_buffer)(value))?;
+                    let desc = self.api.bytes((self.api.g_value_get_boxed)(value).cast())?;
                     if desc != self.description {
                         self.description = desc.clone();
                         o.description = desc;

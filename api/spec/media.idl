@@ -636,3 +636,34 @@ interface MediaMuxer {
     // A successfully published file is retained. Future operations reject.
     undefined close();
 };
+
+// --- xavi extension: clocked file playback ---
+// Local, seekable media. The native player owns demux/decode and audio output;
+// video is returned as CPU BGRA snapshots for rendering by the application.
+// Drive the initial Apple implementation on the main event-loop thread.
+// Windows uses Media Foundation, Android uses NDK media APIs and AAudio,
+// Linux uses system GStreamer. This is independent of the lower-level codec
+// sessions and the MediaDemuxer packet API.
+enum PlaybackState { "opening", "paused", "playing", "buffering", "ended" };
+[Exposed=Window]
+interface MediaPlayer {
+    // Opens paused; metadata loading is asynchronous. Failures raise on poll.
+    static MediaPlayer open(DOMString path);
+    readonly attribute PlaybackState state;
+    // Seconds. Position/duration are zero while not yet known.
+    readonly attribute double position;
+    readonly attribute double duration;
+    readonly attribute double volume;
+    undefined play();
+    undefined pause();
+    // Nonnegative finite seconds, clamped to a known duration. Asynchronous
+    // seek clears any retained frame; state is buffering until it completes.
+    undefined seek(double seconds);
+    undefined setVolume(double volume); // finite 0..1
+    // Retains at most one frame. False means no new frame, not necessarily EOF.
+    boolean pollFrame();
+    // Requires successful pollFrame; transfers the retained frame to caller.
+    // The caller owns and closes it independently of this player.
+    VideoFrame takeFrame();
+    undefined close();
+};

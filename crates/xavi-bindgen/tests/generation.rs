@@ -11,6 +11,7 @@ fn every_runtime_generates_the_implemented_surface() {
             "EncodedAudioChunk",
             "EncodedVideoChunk",
             "PlaneLayouts",
+            "MediaPlayer",
         ] {
             assert!(
                 source.contains(&format!("struct {name} ")),
@@ -40,5 +41,8 @@ fn haxe_uses_typed_buffers_counts_and_copy_completion() {
         assert!(file("OptionalDuration").contains("Unknown"));
         assert!(file("OptionalDuration").contains("Value(microseconds:haxe.Int64)"));
         assert!(file("PlaneLayouts").contains("close():Void"));
+        assert!(file("MediaPlayer").contains("pollFrame():Bool"));
+        assert!(file("MediaPlayer").contains("takeFrame():VideoFrame"));
+        assert!(file("MediaPlayer").contains("seek(seconds:Float):Void"));
     }
 }

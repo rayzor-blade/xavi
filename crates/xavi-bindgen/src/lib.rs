@@ -1,6 +1,6 @@
 //! Generates the native media surface from one declaration and the shared IDL.
-//! Only implemented CPU data operations are exported. The IDL also describes
-//! codecs, capture and demuxing that are not yet part of the native surface.
+//! Exports media data operations and native cross-platform file playback.
+//! Lower-level codec sessions, capture and demuxing are not yet exposed.
 //!
 //! From this workspace, generate Haxe with
 //! `cargo run -p xavi-bindgen --bin xavi-haxe -- ash <output>` (or `rayzor`).

@@ -15,6 +15,8 @@
 //! [`codec`] exposes native audio/video sessions for Rust hosts. Runtime codec
 //! bindings, container reading, device capture, browser agents and GPU surfaces
 //! are separate work. [`mux`] writes encoded audio/video to native MP4 files.
+//! [`player`] supplies native clocked file playback and polled video frames;
+//! the platform backends also own audio output and playback synchronization.
 //!
 //! [`stream::channel`] carries retained frames/chunks or incremental byte input
 //! with bounded capacity and backpressure. Sending `backend.audio(handle)?`
@@ -24,6 +26,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 pub mod codec;
 pub mod mux;
+pub mod player;
 
 use xavi_core::handles::{Kind, Slab};
 pub use xavi_core::stream;
@@ -39,6 +42,7 @@ struct Resources {
     encoded_audio: Slab<EncodedChunk>,
     encoded_video: Slab<EncodedChunk>,
     layouts: Slab<Vec<PlaneLayout>>,
+    players: Slab<Mutex<player::Player>>,
 }
 
 /// Thread-safe resource tables. No global state, runtime allocation or callbacks.
@@ -61,6 +65,7 @@ impl MediaBackend {
                 encoded_audio: Slab::new(Kind::EncodedAudioChunk),
                 encoded_video: Slab::new(Kind::EncodedVideoChunk),
                 layouts: Slab::new(Kind::PlaneLayouts),
+                players: Slab::new(Kind::MediaPlayer),
             }),
         }
     }
@@ -227,6 +232,9 @@ impl MediaBackend {
             Some(Kind::PlaneLayouts) => {
                 resources.layouts.remove(handle);
             }
+            Some(Kind::MediaPlayer) => {
+                resources.players.remove(handle);
+            }
             None => {}
         }
         Ok(())
@@ -238,7 +246,8 @@ impl MediaBackend {
             + r.video.len()
             + r.encoded_audio.len()
             + r.encoded_video.len()
-            + r.layouts.len())
+            + r.layouts.len()
+            + r.players.len())
     }
 
     fn resources(&self) -> Result<MutexGuard<'_, Resources>> {

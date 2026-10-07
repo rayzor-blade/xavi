@@ -15,8 +15,8 @@
 //! Linux. Linux needs appsrc/appsink, audio/video conversion and parsers, plus
 //! voaacenc, faad or fdkaacdec, openh264enc, and a VA or OpenH264 decoder. The
 //! initial Linux encoder emits intra frames to honor arbitrary key requests.
-//! Missing plugins/codecs are reported as unsupported. GStreamer pipelines use
-//! explicit factories and never select gst-libav. Any future FFmpeg backend must
+//! Missing plugins/codecs are reported as unsupported. Codec GStreamer pipelines use
+//! explicit factories; playback filters gst-libav before autoplug negotiation. Any future FFmpeg backend must
 //! be a separate opt-in dependency and must not be an automatic fallback.
 //!
 //! Support probes open a native context; asynchronous negotiation and device
@@ -35,6 +35,7 @@ pub mod mux;
 mod native;
 #[cfg(any(test, target_os = "android", target_os = "windows"))]
 mod pixels;
+pub mod player;
 use native::{Native, NativeConfig};
 
 pub const AAC: &str = "mp4a.40.2";
