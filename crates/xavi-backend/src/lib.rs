@@ -12,8 +12,9 @@
 //! CPU VideoFrame copies complete synchronously; an adapter must still return
 //! the IDL's future, resolved only after the destination writes finish.
 //!
-//! Codec engines, demuxing, device capture, browser agents and GPU surfaces are
-//! not implemented by this initial data backend.
+//! [`codec`] exposes native audio/video sessions for Rust hosts. Runtime codec
+//! bindings, container I/O, device capture, browser agents and GPU surfaces are
+//! separate work.
 //!
 //! [`stream::channel`] carries retained frames/chunks or incremental byte input
 //! with bounded capacity and backpressure. Sending `backend.audio(handle)?`
@@ -21,6 +22,7 @@
 //! the queue nor a future codec source needs a whole file or a seek operation.
 
 use std::sync::{Arc, Mutex, MutexGuard};
+pub mod codec;
 
 use xavi_core::handles::{Kind, Slab};
 pub use xavi_core::stream;

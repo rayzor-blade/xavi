@@ -6,6 +6,7 @@ description = "Shared CPU media operations for xavi runtime adapters"
 
 [dependencies]
 xavi-core.workspace = true
+xavi-platform.workspace = true
 
 [lints]
 workspace = true

@@ -4,10 +4,12 @@
 //! snapshots; clones share storage. Adapters map IDL records onto these types,
 //! enforce signed ABI argument ranges, and own guest roots and future delivery.
 //! The CPU implementation supports PCM conversion and copying video in its
-//! existing pixel format. Color conversion, codecs and GPU surfaces come later.
+//! existing pixel format. [`codec`] schedules bounded streaming work; native
+//! framework implementations live in xavi-platform. GPU surfaces come later.
 
 mod audio;
 mod chunk;
+pub mod codec;
 mod error;
 mod format;
 pub mod handles;

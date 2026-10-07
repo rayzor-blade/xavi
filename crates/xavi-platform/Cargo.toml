@@ -1,0 +1,22 @@
+[package]
+name = "xavi-platform"
+version.workspace = true
+edition.workspace = true
+description = "Platform framework codecs for xavi; no FFmpeg dependency"
+
+[dependencies]
+xavi-core.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", features = ["media", "api-level-28"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
+
+[build-dependencies]
+cc = "1.2"
+
+# Unsafe code is confined to the native framework boundary in this crate.
