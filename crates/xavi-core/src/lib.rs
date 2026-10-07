@@ -10,6 +10,7 @@
 mod audio;
 mod chunk;
 pub mod codec;
+mod edit;
 mod error;
 mod format;
 pub mod handles;

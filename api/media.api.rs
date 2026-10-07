@@ -110,6 +110,14 @@ enum PixelRect {
 }
 
 trait AudioData {
+    #[native(audio_slice)]
+    fn slice(this: &AudioData, offset: i64, count: i64, timestamp: i64) -> Box<AudioData>;
+    #[native(audio_retime)]
+    fn retime(this: &AudioData, timestamp: i64) -> Box<AudioData>;
+    #[native(audio_gain)]
+    fn gain(this: &AudioData, gain: f64) -> Box<AudioData>;
+    #[native(audio_mix)]
+    fn mix(this: &AudioData, other: &AudioData, gain: f64) -> Box<AudioData>;
     #[native(audio_create)]
     fn create(init: &AudioDataInit) -> Box<AudioData>;
     #[native(audio_format)]
@@ -135,6 +143,14 @@ trait AudioData {
 }
 
 trait VideoFrame {
+    #[native(video_retime)]
+    fn retime(this: &VideoFrame, timestamp: i64, duration: i64) -> Box<VideoFrame>;
+    #[native(video_crop)]
+    fn crop(this: &VideoFrame, x: i64, y: i64, width: i64, height: i64) -> Box<VideoFrame>;
+    #[native(video_resize)]
+    fn resize(this: &VideoFrame, width: i64, height: i64) -> Box<VideoFrame>;
+    #[native(video_blend)]
+    fn blend(this: &VideoFrame, other: &VideoFrame, opacity: f64) -> Box<VideoFrame>;
     #[native(video_create)]
     fn create(data: Buffer, init: &VideoFrameBufferInit) -> Box<VideoFrame>;
     #[native(video_format)]
@@ -245,4 +261,177 @@ trait MediaPlayer {
     fn takeFrame(this: &MediaPlayer) -> Box<VideoFrame>;
     #[native(player_close)]
     fn close(this: &MediaPlayer);
+}
+
+#[idl("StreamReadStatus")]
+enum StreamReadStatus {}
+#[idl("MediaPayloadKind")]
+enum MediaPayloadKind {}
+
+trait CodecConfiguration {
+    #[native(configuration_audio)]
+    fn audio(codec: Text, sampleRate: i64, channels: i64, description: Buffer) -> Box<CodecConfiguration>;
+    #[native(configuration_video)]
+    fn video(codec: Text, width: i64, height: i64, description: Buffer) -> Box<CodecConfiguration>;
+    #[native(configuration_codec)]
+    fn codec(this: &CodecConfiguration) -> Text;
+    #[native(configuration_sample_rate)]
+    fn sampleRate(this: &CodecConfiguration) -> i64;
+    #[native(configuration_channels)]
+    fn numberOfChannels(this: &CodecConfiguration) -> i64;
+    #[native(configuration_width)]
+    fn codedWidth(this: &CodecConfiguration) -> i64;
+    #[native(configuration_height)]
+    fn codedHeight(this: &CodecConfiguration) -> i64;
+    #[native(configuration_description_size)]
+    fn descriptionSize(this: &CodecConfiguration) -> i64;
+    #[native(configuration_copy_description)]
+    fn copyDescription(this: &CodecConfiguration, destination: BufferMut);
+    #[native(configuration_close)]
+    fn close(this: &CodecConfiguration);
+}
+
+trait MediaQueue {
+    #[native(queue_create)]
+    fn create(kind: Enum<MediaPayloadKind>, maxItems: i32, maxBytes: i64) -> Box<MediaQueue>;
+    #[native(queue_poll)]
+    fn poll(this: &MediaQueue) -> Enum<StreamReadStatus>;
+    #[native(queue_finish)]
+    fn finish(this: &MediaQueue);
+    #[native(queue_close)]
+    fn close(this: &MediaQueue);
+    #[native(queue_write_audio)]
+    fn writeAudio(this: &MediaQueue, value: &AudioData) -> bool;
+    #[native(queue_read_audio)]
+    fn readAudio(this: &MediaQueue) -> Box<AudioData>;
+    #[native(queue_write_video)]
+    fn writeVideo(this: &MediaQueue, value: &VideoFrame) -> bool;
+    #[native(queue_read_video)]
+    fn readVideo(this: &MediaQueue) -> Box<VideoFrame>;
+    #[native(queue_write_audio_chunk)]
+    fn writeAudioChunk(this: &MediaQueue, value: &EncodedAudioChunk) -> bool;
+    #[native(queue_read_audio_chunk)]
+    fn readAudioChunk(this: &MediaQueue) -> Box<EncodedAudioChunk>;
+    #[native(queue_write_video_chunk)]
+    fn writeVideoChunk(this: &MediaQueue, value: &EncodedVideoChunk) -> bool;
+    #[native(queue_read_video_chunk)]
+    fn readVideoChunk(this: &MediaQueue) -> Box<EncodedVideoChunk>;
+    #[native(queue_write_bytes)]
+    fn writeBytes(this: &MediaQueue, value: Buffer) -> bool;
+    #[native(queue_byte_length)]
+    fn byteLength(this: &MediaQueue) -> i64;
+    #[native(queue_read_bytes)]
+    fn readBytes(this: &MediaQueue, destination: BufferMut) -> i64;
+}
+
+trait MediaDemuxer {
+    #[native(demux_open)]
+    fn open(path: Text, maxItems: i32, maxBytes: i64) -> Box<MediaDemuxer>;
+    #[native(demux_has_audio)]
+    fn hasAudio(this: &MediaDemuxer) -> bool;
+    #[native(demux_has_video)]
+    fn hasVideo(this: &MediaDemuxer) -> bool;
+    #[native(demux_duration)]
+    fn duration(this: &MediaDemuxer) -> f64;
+    #[native(demux_close)]
+    fn close(this: &MediaDemuxer);
+    #[native(demux_audio_configuration)]
+    fn getAudioConfiguration(this: &MediaDemuxer) -> Box<CodecConfiguration>;
+    #[native(demux_audio_status)]
+    fn audioStatus(this: &MediaDemuxer) -> Enum<StreamReadStatus>;
+    #[native(demux_read_audio)]
+    fn readAudioChunk(this: &MediaDemuxer) -> Box<EncodedAudioChunk>;
+    #[native(demux_video_configuration)]
+    fn getVideoConfiguration(this: &MediaDemuxer) -> Box<CodecConfiguration>;
+    #[native(demux_video_status)]
+    fn videoStatus(this: &MediaDemuxer) -> Enum<StreamReadStatus>;
+    #[native(demux_read_video)]
+    fn readVideoChunk(this: &MediaDemuxer) -> Box<EncodedVideoChunk>;
+}
+
+trait MediaMuxer {
+    #[native(mux_audio)]
+    fn audio(path: Text, audio: &CodecConfiguration, origin: i64, maxItems: i32, maxBytes: i64) -> Box<MediaMuxer>;
+    #[native(mux_video)]
+    fn video(path: Text, video: &CodecConfiguration, origin: i64, defaultDuration: i64, maxItems: i32, maxBytes: i64) -> Box<MediaMuxer>;
+    #[native(mux_audio_video)]
+    fn audioVideo(path: Text, audio: &CodecConfiguration, video: &CodecConfiguration, origin: i64, defaultDuration: i64, maxItems: i32, maxBytes: i64) -> Box<MediaMuxer>;
+    #[native(mux_finish)]
+    fn finish(this: &MediaMuxer);
+    #[native(mux_finished)]
+    fn finished(this: &MediaMuxer) -> bool;
+    #[native(mux_close)]
+    fn close(this: &MediaMuxer);
+    #[native(mux_write_audio)]
+    fn writeAudioChunk(this: &MediaMuxer, value: &EncodedAudioChunk) -> bool;
+    #[native(mux_end_audio)]
+    fn endAudioTrack(this: &MediaMuxer);
+    #[native(mux_write_video)]
+    fn writeVideoChunk(this: &MediaMuxer, value: &EncodedVideoChunk) -> bool;
+    #[native(mux_end_video)]
+    fn endVideoTrack(this: &MediaMuxer);
+}
+
+trait AudioEncoder {
+    #[native(audio_encoder_create)]
+    fn create(codec: Text, sampleRate: i64, channels: i64, bitrate: i64, maxItems: i32, maxBytes: i64) -> Box<AudioEncoder>;
+    #[native(audio_encoder_write)]
+    fn tryEncode(this: &AudioEncoder, value: &AudioData) -> bool;
+    #[native(audio_encoder_poll)]
+    fn poll(this: &AudioEncoder) -> Enum<StreamReadStatus>;
+    #[native(audio_encoder_read)]
+    fn read(this: &AudioEncoder) -> Box<EncodedAudioChunk>;
+    #[native(audio_encoder_finish)]
+    fn finish(this: &AudioEncoder);
+    #[native(audio_encoder_close)]
+    fn close(this: &AudioEncoder);
+    #[native(audio_encoder_configuration)]
+    fn getConfiguration(this: &AudioEncoder) -> Box<CodecConfiguration>;
+}
+
+trait VideoEncoder {
+    #[native(video_encoder_create)]
+    fn create(codec: Text, width: i64, height: i64, bitrate: i64, framerate: f64, maxItems: i32, maxBytes: i64) -> Box<VideoEncoder>;
+    #[native(video_encoder_write)]
+    fn tryEncode(this: &VideoEncoder, value: &VideoFrame) -> bool;
+    #[native(video_encoder_poll)]
+    fn poll(this: &VideoEncoder) -> Enum<StreamReadStatus>;
+    #[native(video_encoder_read)]
+    fn read(this: &VideoEncoder) -> Box<EncodedVideoChunk>;
+    #[native(video_encoder_finish)]
+    fn finish(this: &VideoEncoder);
+    #[native(video_encoder_close)]
+    fn close(this: &VideoEncoder);
+    #[native(video_encoder_configuration)]
+    fn getConfiguration(this: &VideoEncoder) -> Box<CodecConfiguration>;
+}
+
+trait AudioDecoder {
+    #[native(audio_decoder_create)]
+    fn create(maxItems: i32, maxBytes: i64, configuration: &CodecConfiguration) -> Box<AudioDecoder>;
+    #[native(audio_decoder_write)]
+    fn tryDecode(this: &AudioDecoder, value: &EncodedAudioChunk) -> bool;
+    #[native(audio_decoder_poll)]
+    fn poll(this: &AudioDecoder) -> Enum<StreamReadStatus>;
+    #[native(audio_decoder_read)]
+    fn read(this: &AudioDecoder) -> Box<AudioData>;
+    #[native(audio_decoder_finish)]
+    fn finish(this: &AudioDecoder);
+    #[native(audio_decoder_close)]
+    fn close(this: &AudioDecoder);
+}
+
+trait VideoDecoder {
+    #[native(video_decoder_create)]
+    fn create(maxItems: i32, maxBytes: i64, configuration: &CodecConfiguration) -> Box<VideoDecoder>;
+    #[native(video_decoder_write)]
+    fn tryDecode(this: &VideoDecoder, value: &EncodedVideoChunk) -> bool;
+    #[native(video_decoder_poll)]
+    fn poll(this: &VideoDecoder) -> Enum<StreamReadStatus>;
+    #[native(video_decoder_read)]
+    fn read(this: &VideoDecoder) -> Box<VideoFrame>;
+    #[native(video_decoder_finish)]
+    fn finish(this: &VideoDecoder);
+    #[native(video_decoder_close)]
+    fn close(this: &VideoDecoder);
 }

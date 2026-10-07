@@ -667,3 +667,121 @@ interface MediaPlayer {
     VideoFrame takeFrame();
     undefined close();
 };
+
+// --- Native pull/streaming profile ---
+// Native workers own codec and disk I/O; no worker accesses guest objects.
+// maxItems/maxBytes bound each queue (plus bounded worker/current-item storage).
+// tryEncode/tryDecode/write* return false under backpressure and retain nothing.
+// Accepted media is retained independently of the caller's handle.
+// poll distinguishes pending, ready and ended. read requires ready and transfers
+// a resource the caller must close. finish seals input and drains output; read
+// until ended. close cancels workers and releases queued media. No callback or
+// guest event loop is needed to progress a native worker.
+// Codec streams are single configured segments: create another after finish.
+// getConfiguration is available after the first encoder output; pass it to a
+// decoder or muxer, or copy its description to transport alongside packets.
+// MediaQueue supports application-fed frames, packets and byte buffers; network
+// transport/protocol framing belongs to the Haxe application.
+// Demuxing reads seekable MP4 AAC/H.264 packets incrementally, in decode order,
+// with presentation timestamps adjusted by a simple movie edit list.
+// Mux finish is asynchronous: poll finished(), or close() to cancel/delete the
+// private partial file. Never overwrites an existing output. End shorter tracks
+// promptly and feed both tracks so bounded queues cannot deadlock each other.
+enum StreamReadStatus { "pending", "ready", "ended" };
+enum MediaPayloadKind { "audio", "video", "audio-chunk", "video-chunk", "bytes" };
+partial interface AudioData {
+    AudioData slice(long long offset, long long count, long long timestamp);
+    AudioData retime(long long timestamp);
+    AudioData gain(double gain);
+    AudioData mix(AudioData other, double gain);
+};
+
+partial interface VideoFrame {
+    VideoFrame retime(long long timestamp, long long duration);
+    VideoFrame crop(long long x, long long y, long long width, long long height);
+    VideoFrame resize(long long width, long long height);
+    VideoFrame blend(VideoFrame other, double opacity);
+};
+
+interface CodecConfiguration {
+    static CodecConfiguration audio(DOMString codec, long long sampleRate, long long channels, BufferSource description);
+    static CodecConfiguration video(DOMString codec, long long width, long long height, BufferSource description);
+    DOMString codec();
+    long long sampleRate();
+    long long numberOfChannels();
+    long long codedWidth();
+    long long codedHeight();
+    long long descriptionSize();
+    undefined copyDescription(BufferSource destination);
+    undefined close();
+};
+
+interface MediaQueue {
+    static MediaQueue create(MediaPayloadKind kind, long maxItems, long long maxBytes);
+    StreamReadStatus poll();
+    undefined finish();
+    undefined close();
+    boolean writeAudio(AudioData value);
+    AudioData readAudio();
+    boolean writeVideo(VideoFrame value);
+    VideoFrame readVideo();
+    boolean writeAudioChunk(EncodedAudioChunk value);
+    EncodedAudioChunk readAudioChunk();
+    boolean writeVideoChunk(EncodedVideoChunk value);
+    EncodedVideoChunk readVideoChunk();
+    boolean writeBytes(BufferSource value);
+    long long byteLength();
+    long long readBytes(BufferSource destination);
+};
+
+partial interface MediaDemuxer {
+    static MediaDemuxer open(DOMString path, long maxItems, long long maxBytes);
+    boolean hasAudio();
+    boolean hasVideo();
+    double duration();
+    CodecConfiguration getAudioConfiguration();
+    StreamReadStatus audioStatus();
+    CodecConfiguration getVideoConfiguration();
+    StreamReadStatus videoStatus();
+};
+
+partial interface MediaMuxer {
+    static MediaMuxer audio(DOMString path, CodecConfiguration audio, long long origin, long maxItems, long long maxBytes);
+    static MediaMuxer video(DOMString path, CodecConfiguration video, long long origin, long long defaultDuration, long maxItems, long long maxBytes);
+    static MediaMuxer audioVideo(DOMString path, CodecConfiguration audio, CodecConfiguration video, long long origin, long long defaultDuration, long maxItems, long long maxBytes);
+    boolean finished();
+};
+
+partial interface AudioEncoder {
+    static AudioEncoder create(DOMString codec, long long sampleRate, long long channels, long long bitrate, long maxItems, long long maxBytes);
+    boolean tryEncode(AudioData value);
+    StreamReadStatus poll();
+    EncodedAudioChunk read();
+    undefined finish();
+    CodecConfiguration getConfiguration();
+};
+
+partial interface VideoEncoder {
+    static VideoEncoder create(DOMString codec, long long width, long long height, long long bitrate, double framerate, long maxItems, long long maxBytes);
+    boolean tryEncode(VideoFrame value);
+    StreamReadStatus poll();
+    EncodedVideoChunk read();
+    undefined finish();
+    CodecConfiguration getConfiguration();
+};
+
+partial interface AudioDecoder {
+    static AudioDecoder create(long maxItems, long long maxBytes, CodecConfiguration configuration);
+    boolean tryDecode(EncodedAudioChunk value);
+    StreamReadStatus poll();
+    AudioData read();
+    undefined finish();
+};
+
+partial interface VideoDecoder {
+    static VideoDecoder create(long maxItems, long long maxBytes, CodecConfiguration configuration);
+    boolean tryDecode(EncodedVideoChunk value);
+    StreamReadStatus poll();
+    VideoFrame read();
+    undefined finish();
+};

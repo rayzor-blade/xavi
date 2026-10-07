@@ -12,6 +12,14 @@ fn every_runtime_generates_the_implemented_surface() {
             "EncodedVideoChunk",
             "PlaneLayouts",
             "MediaPlayer",
+            "CodecConfiguration",
+            "MediaQueue",
+            "AudioEncoder",
+            "VideoEncoder",
+            "AudioDecoder",
+            "VideoDecoder",
+            "MediaMuxer",
+            "MediaDemuxer",
         ] {
             assert!(
                 source.contains(&format!("struct {name} ")),
@@ -19,7 +27,6 @@ fn every_runtime_generates_the_implemented_surface() {
             );
         }
         assert!(source.contains("Future < PlaneLayouts >"));
-        assert!(!source.contains("struct AudioDecoder "));
     }
 }
 

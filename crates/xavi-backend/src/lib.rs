@@ -25,7 +25,9 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 pub mod codec;
+pub mod demux;
 pub mod mux;
+pub mod pipeline;
 pub mod player;
 
 use xavi_core::handles::{Kind, Slab};
@@ -43,6 +45,11 @@ struct Resources {
     encoded_video: Slab<EncodedChunk>,
     layouts: Slab<Vec<PlaneLayout>>,
     players: Slab<Mutex<player::Player>>,
+    configs: Slab<pipeline::Configuration>,
+    queues: Slab<pipeline::Queue>,
+    codecs: Slab<pipeline::Session>,
+    writers: Slab<pipeline::Writer>,
+    readers: Slab<demux::Demuxer>,
 }
 
 /// Thread-safe resource tables. No global state, runtime allocation or callbacks.
@@ -66,6 +73,11 @@ impl MediaBackend {
                 encoded_video: Slab::new(Kind::EncodedVideoChunk),
                 layouts: Slab::new(Kind::PlaneLayouts),
                 players: Slab::new(Kind::MediaPlayer),
+                configs: Slab::new(Kind::CodecConfiguration),
+                queues: Slab::new(Kind::MediaQueue),
+                codecs: Slab::new(Kind::MediaCodec),
+                writers: Slab::new(Kind::MediaMuxer),
+                readers: Slab::new(Kind::MediaDemuxer),
             }),
         }
     }
@@ -235,6 +247,21 @@ impl MediaBackend {
             Some(Kind::MediaPlayer) => {
                 resources.players.remove(handle);
             }
+            Some(Kind::CodecConfiguration) => {
+                resources.configs.remove(handle);
+            }
+            Some(Kind::MediaQueue) => {
+                resources.queues.remove(handle);
+            }
+            Some(Kind::MediaCodec) => {
+                resources.codecs.remove(handle);
+            }
+            Some(Kind::MediaMuxer) => {
+                resources.writers.remove(handle);
+            }
+            Some(Kind::MediaDemuxer) => {
+                resources.readers.remove(handle);
+            }
             None => {}
         }
         Ok(())
@@ -247,7 +274,12 @@ impl MediaBackend {
             + r.encoded_audio.len()
             + r.encoded_video.len()
             + r.layouts.len()
-            + r.players.len())
+            + r.players.len()
+            + r.configs.len()
+            + r.queues.len()
+            + r.codecs.len()
+            + r.writers.len()
+            + r.readers.len())
     }
 
     fn resources(&self) -> Result<MutexGuard<'_, Resources>> {
@@ -275,4 +307,52 @@ pub fn install(out: impl AsRef<std::path::Path>) -> std::io::Result<std::path::P
     let path = root.join("native.rs");
     std::fs::write(&path, include_str!("template/native.rs"))?;
     Ok(path)
+}
+
+impl MediaBackend {
+    pub fn insert_configs(&self, value: pipeline::Configuration) -> Result<i32> {
+        self.resources()?.configs.insert(value)
+    }
+    pub fn configs(&self, handle: i32) -> Result<Arc<pipeline::Configuration>> {
+        self.resources()?
+            .configs
+            .get(handle)
+            .ok_or_else(Error::closed)
+    }
+    pub fn insert_queues(&self, value: pipeline::Queue) -> Result<i32> {
+        self.resources()?.queues.insert(value)
+    }
+    pub fn queues(&self, handle: i32) -> Result<Arc<pipeline::Queue>> {
+        self.resources()?
+            .queues
+            .get(handle)
+            .ok_or_else(Error::closed)
+    }
+    pub fn insert_codecs(&self, value: pipeline::Session) -> Result<i32> {
+        self.resources()?.codecs.insert(value)
+    }
+    pub fn codecs(&self, handle: i32) -> Result<Arc<pipeline::Session>> {
+        self.resources()?
+            .codecs
+            .get(handle)
+            .ok_or_else(Error::closed)
+    }
+    pub fn insert_writers(&self, value: pipeline::Writer) -> Result<i32> {
+        self.resources()?.writers.insert(value)
+    }
+    pub fn writers(&self, handle: i32) -> Result<Arc<pipeline::Writer>> {
+        self.resources()?
+            .writers
+            .get(handle)
+            .ok_or_else(Error::closed)
+    }
+    pub fn insert_readers(&self, value: demux::Demuxer) -> Result<i32> {
+        self.resources()?.readers.insert(value)
+    }
+    pub fn readers(&self, handle: i32) -> Result<Arc<demux::Demuxer>> {
+        self.resources()?
+            .readers
+            .get(handle)
+            .ok_or_else(Error::closed)
+    }
 }

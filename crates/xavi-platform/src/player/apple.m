@@ -1,10 +1,14 @@
 #import <AVFoundation/AVFoundation.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 // AVPlayer and its notification state stay on the main thread. The Rust owner
 // may be dropped elsewhere; destruction is then dispatched to that thread.
-@interface XaviPlayback : NSObject
+@interface XaviPlayback : NSObject {
+@public
+  _Atomic(NSUInteger) completedSeekGeneration;
+}
 @property(nonatomic, strong) AVPlayer *player;
 @property(nonatomic, strong) AVPlayerItemVideoOutput *output;
 @property(nonatomic, strong) id endObserver;
@@ -60,6 +64,8 @@ static int main_thread(char *error) {
 int xavi_player_main_thread(void) { return [NSThread isMainThread] ? 1 : 0; }
 static int check(XaviPlayback *c, char *error) {
   if (c.closed) return fail(error, @"player is closed");
+  if (c.seeking && atomic_load_explicit(&c->completedSeekGeneration, memory_order_acquire) == c.seekGeneration)
+    c.seeking = NO;
   NSError *e = c.failure ?: c.player.error ?: c.player.currentItem.error;
   if (e) return fail(error, e.localizedDescription);
   return 0;
@@ -69,6 +75,7 @@ void *xavi_player_open(const char *path, char *error) {
     if (main_thread(error)) return NULL;
     @try {
       XaviPlayback *c = [XaviPlayback new];
+      atomic_init(&c->completedSeekGeneration, 0);
       NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
       AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
       AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:asset];
@@ -121,11 +128,16 @@ int xavi_player_command(void *ctx, int command, double value, char *error) {
         [c.player seekToTime:CMTimeMakeWithSeconds(value, 1000000)
             toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero
             completionHandler:^(BOOL finished) {
-              dispatch_async(dispatch_get_main_queue(), ^{
-                XaviPlayback *p = weak;
-                if (p && !p.closed && p.seekGeneration == generation)
-                  p.seeking = NO;
-              });
+              // AVFoundation can finish on a private queue. Publish only the
+              // generation here; the next main-thread poll updates the state.
+              // A pumped application loop need not drain GCD's main queue.
+              XaviPlayback *p = weak;
+              if (p) {
+                NSUInteger seen = atomic_load_explicit(&p->completedSeekGeneration, memory_order_relaxed);
+                while (seen < generation && !atomic_compare_exchange_weak_explicit(
+                    &p->completedSeekGeneration, &seen, generation,
+                    memory_order_release, memory_order_relaxed)) {}
+              }
             }];
         break;
       }
@@ -167,7 +179,9 @@ int xavi_player_frame(void *ctx, XaviPlaybackFrame *out, char *error) {
     @try {
       XaviPlayback *c = (__bridge XaviPlayback *)ctx;
       if (check(c, error)) return -1;
-      if (c.seeking || c.player.currentItem.status != AVPlayerItemStatusReadyToPlay) return 0;
+      // Pulling output during a paused seek lets the video pipeline finish
+      // that seek; waiting for completion before polling can stall it.
+      if (c.player.currentItem.status != AVPlayerItemStatusReadyToPlay) return 0;
       CMTime time = c.player.currentTime;
       if (![c.output hasNewPixelBufferForItemTime:time]) return 0;
       CMTime pts = kCMTimeInvalid;

@@ -7,6 +7,8 @@ description = "Shared CPU media operations for xavi runtime adapters"
 [dependencies]
 xavi-core.workspace = true
 xavi-platform.workspace = true
+# Container parsing only; codecs remain platform-native.
+mp4 = "0.14"
 
 [lints]
 workspace = true

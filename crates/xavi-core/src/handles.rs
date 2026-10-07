@@ -24,6 +24,11 @@ pub enum Kind {
     EncodedVideoChunk = 4,
     PlaneLayouts = 5,
     MediaPlayer = 6,
+    CodecConfiguration = 7,
+    MediaQueue = 8,
+    MediaCodec = 9,
+    MediaMuxer = 10,
+    MediaDemuxer = 11,
 }
 
 impl Kind {
@@ -38,6 +43,11 @@ impl Kind {
             4 => Some(Self::EncodedVideoChunk),
             5 => Some(Self::PlaneLayouts),
             6 => Some(Self::MediaPlayer),
+            7 => Some(Self::CodecConfiguration),
+            8 => Some(Self::MediaQueue),
+            9 => Some(Self::MediaCodec),
+            10 => Some(Self::MediaMuxer),
+            11 => Some(Self::MediaDemuxer),
             _ => None,
         }
     }

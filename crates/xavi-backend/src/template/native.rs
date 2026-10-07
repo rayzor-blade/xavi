@@ -477,3 +477,141 @@ pub fn player_take_frame(this: i32) -> i32 {
 pub fn player_close(this: i32) {
     close(this, core::handles::Kind::MediaPlayer);
 }
+
+// Pull-based codecs/streams keep all guest allocation and exceptions here.
+use xavi_backend::pipeline as pipe;
+use std::sync::Arc;
+fn status_out(value: pipe::Status) -> i32 {
+    match value { pipe::Status::Pending => StreamReadStatus::Pending, pipe::Status::Ready => StreamReadStatus::Ready, pipe::Status::Ended => StreamReadStatus::Ended }.native()
+}
+fn payload_kind(value: i32) -> core::Result<pipe::MediaKind> {
+    match MediaPayloadKind::from_native(value) {
+        Some(MediaPayloadKind::Audio) => Ok(pipe::MediaKind::Audio), Some(MediaPayloadKind::Video) => Ok(pipe::MediaKind::Video),
+        Some(MediaPayloadKind::AudioChunk) => Ok(pipe::MediaKind::AudioChunk), Some(MediaPayloadKind::VideoChunk) => Ok(pipe::MediaKind::VideoChunk),
+        Some(MediaPayloadKind::Bytes) => Ok(pipe::MediaKind::Bytes), _ => Err(core::Error::invalid("undeclared payload kind")),
+    }
+}
+fn media_lock<T>(value: &std::sync::Mutex<T>) -> core::Result<std::sync::MutexGuard<'_,T>> {
+    value.lock().map_err(|_| core::Error::new(core::ErrorKind::InvalidState,"media worker lock is poisoned"))
+}
+fn audio_configuration(m: &xavi_backend::MediaBackend, id: i32) -> core::Result<core::codec::AudioDecoderConfig> {
+    match &*m.configs(id)? { pipe::Configuration::Audio(c) => Ok(c.clone()), _ => Err(core::Error::invalid("expected audio configuration")) }
+}
+fn video_configuration(m: &xavi_backend::MediaBackend, id: i32) -> core::Result<core::codec::VideoDecoderConfig> {
+    match &*m.configs(id)? { pipe::Configuration::Video(c) => Ok(c.clone()), _ => Err(core::Error::invalid("expected video configuration")) }
+}
+fn config_bytes(buffer: Buffer) -> core::Result<Arc<[u8]>> {
+    read(buffer, |bytes| { if bytes.len() > 1024*1024 { return Err(core::Error::invalid("codec description exceeds 1 MiB")); } Ok(Arc::from(bytes)) })
+}
+pub fn configuration_audio(codec: Text, sample_rate: i64, channels: i64, description: Buffer) -> i32 {
+    call(|m| m.insert_configs(pipe::Configuration::Audio(core::codec::AudioDecoderConfig { codec: codec.as_str().into(), sample_rate: size(sample_rate)?, channels: size(channels)?, description: config_bytes(description)? })))
+}
+pub fn configuration_video(codec: Text, width: i64, height: i64, description: Buffer) -> i32 {
+    call(|m| m.insert_configs(pipe::Configuration::Video(core::codec::VideoDecoderConfig { codec: codec.as_str().into(), coded_width: Some(size(width)?), coded_height: Some(size(height)?), description: config_bytes(description)?, color_space: core::VideoColorSpace::default() })))
+}
+pub fn configuration_codec(this: i32) -> Text {
+    let codec = call(|m| Ok(match &*m.configs(this)? { pipe::Configuration::Audio(c) => c.codec.clone(), pipe::Configuration::Video(c) => c.codec.clone() }));
+    Text::new(&codec)
+}
+pub fn configuration_sample_rate(this: i32) -> i64 { call(|m| Ok(audio_configuration(m,this)?.sample_rate.into())) }
+pub fn configuration_channels(this: i32) -> i64 { call(|m| Ok(audio_configuration(m,this)?.channels.into())) }
+pub fn configuration_width(this: i32) -> i64 { call(|m| Ok(video_configuration(m,this)?.coded_width.unwrap_or(0).into())) }
+pub fn configuration_height(this: i32) -> i64 { call(|m| Ok(video_configuration(m,this)?.coded_height.unwrap_or(0).into())) }
+pub fn configuration_description_size(this: i32) -> i64 { call(|m| Ok(m.configs(this)?.description().len() as i64)) }
+pub fn configuration_copy_description(this: i32, destination: BufferMut) { call(|m| {
+    let config = m.configs(this)?; write(destination, |bytes| { let src = config.description(); if bytes.len() < src.len() { return Err(core::Error::invalid("description destination is too small")); } bytes[..src.len()].copy_from_slice(src); Ok(()) })
+}) }
+pub fn configuration_close(this: i32) { close(this,core::handles::Kind::CodecConfiguration); }
+fn retain_item(m: &xavi_backend::MediaBackend, item: pipe::Item) -> core::Result<i32> {
+    match item { pipe::Item::Audio(v) => m.retain_audio(v), pipe::Item::Video(v) => m.retain_video(v), pipe::Item::AudioChunk(v) => m.retain_audio_chunk(v), pipe::Item::VideoChunk(v) => m.retain_video_chunk(v), _ => Err(core::Error::invalid("expected a media resource")) }
+}
+pub fn queue_create(kind: i32, items: i32, bytes: i64) -> i32 { call(|m| m.insert_queues(pipe::Queue::new(payload_kind(kind)?,pipe::limits(items,bytes)?)?)) }
+pub fn queue_poll(this: i32) -> i32 { call(|m| Ok(status_out(media_lock(&m.queues(this)?.output)?.status()?))) }
+pub fn queue_finish(this: i32) { call(|m| m.queues(this)?.finish()) }
+pub fn queue_close(this: i32) { close(this,core::handles::Kind::MediaQueue); }
+pub fn queue_write_bytes(this: i32, value: Buffer) -> bool { call(|m| {
+    let queue = m.queues(this)?;
+    read(value, |bytes| { if bytes.len() > 256*1024*1024 { return Err(core::Error::invalid("byte chunk exceeds 256 MiB")); } queue.write(pipe::Item::Bytes(Arc::from(bytes))) })
+}) }
+pub fn queue_byte_length(this: i32) -> i64 { call(|m| { let queue = m.queues(this)?; let mut output = media_lock(&queue.output)?; match output.peek()? { pipe::Item::Bytes(bytes) => Ok(bytes.len() as i64), _ => Err(core::Error::invalid("expected byte queue")) } }) }
+pub fn queue_read_bytes(this: i32, destination: BufferMut) -> i64 { call(|m| {
+    let queue = m.queues(this)?; let mut output = media_lock(&queue.output)?;
+    let size = match output.peek()? { pipe::Item::Bytes(src) => write(destination, |bytes| { if bytes.len() < src.len() { return Err(core::Error::invalid("byte destination is too small")); } bytes[..src.len()].copy_from_slice(src); Ok(src.len() as i64) })?, _ => return Err(core::Error::invalid("expected byte queue")) };
+    output.take()?; Ok(size)
+}) }
+fn session(m: &xavi_backend::MediaBackend, handle: i32, input: pipe::MediaKind, output: pipe::MediaKind) -> core::Result<Arc<pipe::Session>> {
+    let s = m.codecs(handle)?; if s.input_kind != input || s.output_kind != output { return Err(core::Error::invalid("wrong codec handle type")); } s.worker.check()?; Ok(s)
+}
+pub fn audio_encoder_create(codec: Text, rate: i64, channels: i64, bitrate: i64, items: i32, bytes: i64) -> i32 { call(|m| {
+    let limits = pipe::limits(items,bytes)?; let bitrate = u64::try_from(bitrate).map_err(|_| core::Error::invalid("negative bitrate"))?;
+    m.insert_codecs(pipe::Session::audio_encoder(core::codec::AudioEncoderConfig { codec: codec.as_str().into(), sample_rate: size(rate)?, channels: size(channels)?, bitrate: Some(bitrate) }, limits,limits)?)
+}) }
+pub fn video_encoder_create(codec: Text, width: i64, height: i64, bitrate: i64, framerate: f64, items: i32, bytes: i64) -> i32 { call(|m| {
+    let limits = pipe::limits(items,bytes)?; let bitrate = u64::try_from(bitrate).map_err(|_| core::Error::invalid("negative bitrate"))?;
+    m.insert_codecs(pipe::Session::video_encoder(core::codec::VideoEncoderConfig { codec: codec.as_str().into(), width: size(width)?, height: size(height)?, bitrate, framerate },limits,limits)?)
+}) }
+pub fn audio_decoder_create(items: i32, bytes: i64, config: i32) -> i32 { call(|m| { let limits = pipe::limits(items,bytes)?; m.insert_codecs(pipe::Session::audio_decoder(audio_configuration(m,config)?,limits,limits)?) }) }
+pub fn video_decoder_create(items: i32, bytes: i64, config: i32) -> i32 { call(|m| { let limits = pipe::limits(items,bytes)?; m.insert_codecs(pipe::Session::video_decoder(video_configuration(m,config)?,limits,limits)?) }) }
+fn mux_create(path: Text, audio: Option<i32>, video: Option<i32>, origin: i64, default_duration: i64, items: i32, bytes: i64) -> i32 { call(|m| {
+    let config = core::mux::Mp4Config { audio: audio.map(|id| audio_configuration(m,id)).transpose()?, video: video.map(|id| video_configuration(m,id)).transpose()?, timestamp_origin: origin, default_video_duration: duration((default_duration != 0).then_some(default_duration))? };
+    m.insert_writers(pipe::Writer::new(path.as_str().into(),config,pipe::limits(items,bytes)?)?)
+}) }
+pub fn mux_audio(path: Text, audio: i32, origin: i64, items: i32, bytes: i64) -> i32 { mux_create(path,Some(audio),None,origin,0,items,bytes) }
+pub fn mux_video(path: Text, video: i32, origin: i64, default_duration: i64, items: i32, bytes: i64) -> i32 { mux_create(path,None,Some(video),origin,default_duration,items,bytes) }
+pub fn mux_audio_video(path: Text, audio: i32, video: i32, origin: i64, default_duration: i64, items: i32, bytes: i64) -> i32 { mux_create(path,Some(audio),Some(video),origin,default_duration,items,bytes) }
+pub fn mux_finish(this: i32) { call(|m| m.writers(this)?.finish()) }
+pub fn mux_finished(this: i32) -> bool { call(|m| m.writers(this)?.finished()) }
+pub fn mux_close(this: i32) { close(this,core::handles::Kind::MediaMuxer); }
+pub fn mux_end_audio(this: i32) { call(|m| m.writers(this)?.end_audio()) }
+pub fn mux_end_video(this: i32) { call(|m| m.writers(this)?.end_video()) }
+pub fn demux_open(path: Text, items: i32, bytes: i64) -> i32 { call(|m| m.insert_readers(xavi_backend::demux::Demuxer::open(path.as_str().into(),pipe::limits(items,bytes)?)?)) }
+pub fn demux_duration(this: i32) -> f64 { call(|m| { let reader=m.readers(this)?;reader.worker.check()?;let value=*media_lock(&reader.duration)?;Ok(value) }) }
+pub fn demux_close(this: i32) { close(this,core::handles::Kind::MediaDemuxer); }
+pub fn audio_slice(this: i32, offset: i64, count: i64, timestamp: i64) -> i32 { call(|m| m.retain_audio(Arc::new(m.audio(this)?.slice(size(offset)?,size(count)?,timestamp)?))) }
+pub fn audio_retime(this: i32, timestamp: i64) -> i32 { call(|m| m.retain_audio(Arc::new(m.audio(this)?.retime(timestamp)?))) }
+pub fn audio_gain(this: i32, gain: f64) -> i32 { call(|m| m.retain_audio(Arc::new(m.audio(this)?.gain(gain)?))) }
+pub fn audio_mix(this: i32, other: i32, gain: f64) -> i32 { call(|m| m.retain_audio(Arc::new(m.audio(this)?.mix(&*m.audio(other)?,gain)?))) }
+pub fn video_retime(this: i32, timestamp: i64, length: i64) -> i32 { call(|m| m.retain_video(Arc::new(m.video(this)?.retime(timestamp,duration((length != 0).then_some(length))?)?))) }
+pub fn video_crop(this: i32, x: i64, y: i64, width: i64, height: i64) -> i32 { call(|m| m.retain_video(Arc::new(m.video(this)?.crop(core::Rect { x: size(x)?, y: size(y)?, width: size(width)?, height: size(height)? })?))) }
+pub fn video_resize(this: i32, width: i64, height: i64) -> i32 { call(|m| m.retain_video(Arc::new(m.video(this)?.resize(size(width)?,size(height)?)?))) }
+pub fn video_blend(this: i32, other: i32, opacity: f64) -> i32 { call(|m| m.retain_video(Arc::new(m.video(this)?.blend(&*m.video(other)?,opacity)?))) }
+pub fn queue_write_audio(this: i32, value: i32) -> bool { call(|m| m.queues(this)?.write(pipe::Item::Audio(m.audio(value)?))) }
+pub fn queue_read_audio(this: i32) -> i32 { call(|m| { let queue=m.queues(this)?; if queue.kind != pipe::MediaKind::Audio { return Err(core::Error::invalid("wrong queue type")); } let item=media_lock(&queue.output)?.take()?; retain_item(m,item) }) }
+pub fn queue_write_video(this: i32, value: i32) -> bool { call(|m| m.queues(this)?.write(pipe::Item::Video(m.video(value)?))) }
+pub fn queue_read_video(this: i32) -> i32 { call(|m| { let queue=m.queues(this)?; if queue.kind != pipe::MediaKind::Video { return Err(core::Error::invalid("wrong queue type")); } let item=media_lock(&queue.output)?.take()?; retain_item(m,item) }) }
+pub fn queue_write_audio_chunk(this: i32, value: i32) -> bool { call(|m| m.queues(this)?.write(pipe::Item::AudioChunk(m.audio_chunk(value)?))) }
+pub fn queue_read_audio_chunk(this: i32) -> i32 { call(|m| { let queue=m.queues(this)?; if queue.kind != pipe::MediaKind::AudioChunk { return Err(core::Error::invalid("wrong queue type")); } let item=media_lock(&queue.output)?.take()?; retain_item(m,item) }) }
+pub fn queue_write_video_chunk(this: i32, value: i32) -> bool { call(|m| m.queues(this)?.write(pipe::Item::VideoChunk(m.video_chunk(value)?))) }
+pub fn queue_read_video_chunk(this: i32) -> i32 { call(|m| { let queue=m.queues(this)?; if queue.kind != pipe::MediaKind::VideoChunk { return Err(core::Error::invalid("wrong queue type")); } let item=media_lock(&queue.output)?.take()?; retain_item(m,item) }) }
+pub fn audio_encoder_write(this: i32, value: i32) -> bool { call(|m| session(m,this,pipe::MediaKind::Audio,pipe::MediaKind::AudioChunk)?.write(pipe::Item::Audio(m.audio(value)?))) }
+pub fn audio_encoder_poll(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::Audio,pipe::MediaKind::AudioChunk)?; Ok(status_out(media_lock(&s.output)?.status()?)) }) }
+pub fn audio_encoder_read(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::Audio,pipe::MediaKind::AudioChunk)?; let item=media_lock(&s.output)?.take()?; retain_item(m,item) }) }
+pub fn audio_encoder_finish(this: i32) { call(|m| session(m,this,pipe::MediaKind::Audio,pipe::MediaKind::AudioChunk)?.finish()) }
+pub fn audio_encoder_close(this: i32) { close(this,core::handles::Kind::MediaCodec); }
+pub fn audio_encoder_configuration(this: i32) -> i32 { call(|m| m.insert_configs(session(m,this,pipe::MediaKind::Audio,pipe::MediaKind::AudioChunk)?.configuration()?)) }
+pub fn video_encoder_write(this: i32, value: i32) -> bool { call(|m| session(m,this,pipe::MediaKind::Video,pipe::MediaKind::VideoChunk)?.write(pipe::Item::Video(m.video(value)?))) }
+pub fn video_encoder_poll(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::Video,pipe::MediaKind::VideoChunk)?; Ok(status_out(media_lock(&s.output)?.status()?)) }) }
+pub fn video_encoder_read(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::Video,pipe::MediaKind::VideoChunk)?; let item=media_lock(&s.output)?.take()?; retain_item(m,item) }) }
+pub fn video_encoder_finish(this: i32) { call(|m| session(m,this,pipe::MediaKind::Video,pipe::MediaKind::VideoChunk)?.finish()) }
+pub fn video_encoder_close(this: i32) { close(this,core::handles::Kind::MediaCodec); }
+pub fn video_encoder_configuration(this: i32) -> i32 { call(|m| m.insert_configs(session(m,this,pipe::MediaKind::Video,pipe::MediaKind::VideoChunk)?.configuration()?)) }
+pub fn audio_decoder_write(this: i32, value: i32) -> bool { call(|m| session(m,this,pipe::MediaKind::AudioChunk,pipe::MediaKind::Audio)?.write(pipe::Item::AudioChunk(m.audio_chunk(value)?))) }
+pub fn audio_decoder_poll(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::AudioChunk,pipe::MediaKind::Audio)?; Ok(status_out(media_lock(&s.output)?.status()?)) }) }
+pub fn audio_decoder_read(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::AudioChunk,pipe::MediaKind::Audio)?; let item=media_lock(&s.output)?.take()?; retain_item(m,item) }) }
+pub fn audio_decoder_finish(this: i32) { call(|m| session(m,this,pipe::MediaKind::AudioChunk,pipe::MediaKind::Audio)?.finish()) }
+pub fn audio_decoder_close(this: i32) { close(this,core::handles::Kind::MediaCodec); }
+pub fn video_decoder_write(this: i32, value: i32) -> bool { call(|m| session(m,this,pipe::MediaKind::VideoChunk,pipe::MediaKind::Video)?.write(pipe::Item::VideoChunk(m.video_chunk(value)?))) }
+pub fn video_decoder_poll(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::VideoChunk,pipe::MediaKind::Video)?; Ok(status_out(media_lock(&s.output)?.status()?)) }) }
+pub fn video_decoder_read(this: i32) -> i32 { call(|m| { let s=session(m,this,pipe::MediaKind::VideoChunk,pipe::MediaKind::Video)?; let item=media_lock(&s.output)?.take()?; retain_item(m,item) }) }
+pub fn video_decoder_finish(this: i32) { call(|m| session(m,this,pipe::MediaKind::VideoChunk,pipe::MediaKind::Video)?.finish()) }
+pub fn video_decoder_close(this: i32) { close(this,core::handles::Kind::MediaCodec); }
+pub fn mux_write_audio(this: i32, value: i32) -> bool { call(|m| m.writers(this)?.write(pipe::Item::AudioChunk(m.audio_chunk(value)?))) }
+pub fn demux_has_audio(this: i32) -> bool { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let has=media_lock(&reader.configs)?[0].is_some(); Ok(has) }) }
+pub fn demux_audio_configuration(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let config=media_lock(&reader.configs)?[0].clone().ok_or_else(|| core::Error::invalid("track is absent"))?; m.insert_configs(config) }) }
+pub fn demux_audio_status(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; Ok(status_out(media_lock(&reader.audio)?.status()?)) }) }
+pub fn demux_read_audio(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let item=media_lock(&reader.audio)?.take()?; retain_item(m,item) }) }
+pub fn mux_write_video(this: i32, value: i32) -> bool { call(|m| m.writers(this)?.write(pipe::Item::VideoChunk(m.video_chunk(value)?))) }
+pub fn demux_has_video(this: i32) -> bool { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let has=media_lock(&reader.configs)?[1].is_some(); Ok(has) }) }
+pub fn demux_video_configuration(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let config=media_lock(&reader.configs)?[1].clone().ok_or_else(|| core::Error::invalid("track is absent"))?; m.insert_configs(config) }) }
+pub fn demux_video_status(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; Ok(status_out(media_lock(&reader.video)?.status()?)) }) }
+pub fn demux_read_video(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let item=media_lock(&reader.video)?.take()?; retain_item(m,item) }) }
