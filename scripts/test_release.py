@@ -7,10 +7,16 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-from package_release import ROOT, HOSTS, TARGETS, checksums, sdk, validate_tag
+from package_release import ROOT, HOSTS, TARGETS, checksums, sdk, snapshot, validate_tag
 
 
 class ReleaseTest(unittest.TestCase):
+    def sdk_fixture(self, directory, revision="a" * 40, dirty=False):
+        path = directory / "xavi-sdk.zip"
+        with ZipFile(path, "w") as archive:
+            archive.writestr("xavi-sdk.json", json.dumps({"schema": 1, "revision": revision, "dirty": dirty}))
+        return path
+
     def test_sdk_is_reproducible_and_contains_relocatable_sources(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
@@ -36,16 +42,39 @@ class ReleaseTest(unittest.TestCase):
     def test_release_requires_every_host_and_checksums_exact_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            (output / "xavi-sdk.zip").write_bytes(b"sdk")
+            self.sdk_fixture(output)
             with self.assertRaises(ValueError):
                 checksums(output, complete=True)
             for host in HOSTS:
                 (output / f"xavi-tools-{host}.zip").write_bytes(host.encode())
+            snapshot(output)
             lines = checksums(output, complete=True).read_text().splitlines()
-            self.assertEqual(len(lines), len(HOSTS) + 1)
+            self.assertEqual(len(lines), len(HOSTS) + 2)
             for line in lines:
                 digest, name = line.split("  ")
                 self.assertEqual(digest, hashlib.sha256((output / name).read_bytes()).hexdigest())
+
+    def test_nightly_snapshot_survives_updates_and_rejects_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            original = self.sdk_fixture(output).read_bytes()
+            first = snapshot(output)
+            checksum = first.with_suffix(".sha256").read_bytes()
+            self.assertEqual(first.read_bytes(), original)
+            self.sdk_fixture(output, revision="b" * 40)
+            second = snapshot(output)
+            self.assertNotEqual(first.name, second.name)
+            self.assertEqual(first.read_bytes(), original)
+            self.assertEqual(first.with_suffix(".sha256").read_bytes(), checksum)
+            self.sdk_fixture(output)
+            with ZipFile(output / "xavi-sdk.zip", "a") as archive:
+                archive.writestr("changed.rs", "different contents at the same revision")
+            with self.assertRaisesRegex(ValueError, "cannot replace"):
+                snapshot(output)
+            self.assertEqual(first.read_bytes(), original)
+            self.sdk_fixture(output, dirty=True)
+            with self.assertRaisesRegex(ValueError, "clean release"):
+                snapshot(output)
 
     def test_release_tags(self):
         for tag in ["nightly", "v0.1.0", "v2026.10.07", "v1.2.3-rc.1"]:

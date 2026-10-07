@@ -138,6 +138,7 @@ runtime adapters and other Rust consumers:
 | Asset | Contents |
 |---|---|
 | `xavi-sdk.zip` | Portable Rust source SDK: all xavi crates, IDL, tests, examples, lockfiles, and the pinned x-idl generator source |
+| `xavi-sdk-<revision>.zip` and `.sha256` | The same SDK with a permanent revision name and its checksum, retained when nightly advances |
 | `xavi-tools-<platform>.zip` | Prebuilt `xavi-haxe` generator and generated Ash/HashLink and Rayzor Haxe sources |
 | `SHA256SUMS` | SHA-256 checksums for every ZIP |
 
@@ -148,6 +149,11 @@ and ship the resulting runtime library. The SDK is a source distribution;
 it does not promise a portable Rust binary ABI or include a VM-specific HDLL.
 Rust registry dependencies are resolved using `Cargo.lock` and still require
 network access or a populated Cargo cache.
+
+Nightly consumers should download the SDK and checksum named by their pinned
+40-character revision. Those assets remain on the nightly release when later
+builds replace `xavi-sdk.zip`, `SHA256SUMS`, and the host tools. This keeps
+existing adapters reproducible without silently upgrading their media API.
 
 Unpack the SDK beside your adapter:
 

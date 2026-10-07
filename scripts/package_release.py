@@ -106,9 +106,39 @@ def generator(output, platform, binary, generated, tag):
     return write_zip(output / f"xavi-tools-{platform}.zip", files, executable=name)
 
 
+def sdk_revision(path):
+    with ZipFile(path) as archive:
+        manifest = json.loads(archive.read("xavi-sdk.json"))
+    revision = manifest.get("revision", "")
+    if manifest.get("schema") != 1 or manifest.get("dirty") is not False or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("SDK snapshot requires a clean release with a full source revision")
+    return revision
+
+
+def snapshot(directory):
+    source = directory / "xavi-sdk.zip"
+    revision = sdk_revision(source)
+    data = source.read_bytes()
+    archive = directory / f"xavi-sdk-{revision}.zip"
+    if archive.exists() and archive.read_bytes() != data:
+        raise ValueError("cannot replace an existing SDK revision with different bytes")
+    archive.write_bytes(data)
+    archive.with_suffix(".sha256").write_text(f"{hashlib.sha256(data).hexdigest()}  {archive.name}\n")
+    return archive
+
+
 def checksums(directory, complete=False):
     files = sorted(directory.glob("*.zip"))
     expected = {"xavi-sdk.zip", *(f"xavi-tools-{host}.zip" for host in HOSTS)}
+    if complete:
+        revision = sdk_revision(directory / "xavi-sdk.zip")
+        archive = directory / f"xavi-sdk-{revision}.zip"
+        expected.add(archive.name)
+        digest = hashlib.sha256((directory / "xavi-sdk.zip").read_bytes()).hexdigest()
+        checksum = archive.with_suffix(".sha256")
+        if (not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != digest
+                or not checksum.is_file() or checksum.read_text() != f"{digest}  {archive.name}\n"):
+            raise ValueError("release must contain a matching revision-named SDK and checksum")
     if not files or (complete and {p.name for p in files} != expected):
         raise ValueError("release must contain the SDK and every host generator package")
     output = directory / "SHA256SUMS"
@@ -131,6 +161,8 @@ def main():
     p.add_argument("--platform", required=True, choices=HOSTS)
     p.add_argument("--binary", required=True, type=Path)
     p.add_argument("--generated", required=True, type=Path)
+    p = sub.add_parser("snapshot")
+    p.add_argument("directory", type=Path)
     p = sub.add_parser("checksums")
     p.add_argument("directory", type=Path)
     p.add_argument("--complete", action="store_true")
@@ -141,6 +173,8 @@ def main():
         print(sdk(args.output, args.tag, allow_dirty=args.allow_dirty))
     elif args.command == "tools":
         print(generator(args.output, args.platform, args.binary, args.generated, args.tag))
+    elif args.command == "snapshot":
+        print(snapshot(args.directory))
     else:
         print(checksums(args.directory, args.complete))
 

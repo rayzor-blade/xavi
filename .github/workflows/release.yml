@@ -63,6 +63,9 @@ jobs:
   build:
     needs: plan
     runs-on: ${{ matrix.os }}
+    env:
+      # Cache only Cargo artifacts; extracted SDK sources live under RUNNER_TEMP.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/xavi/target
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +99,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: xavi
+          prefix-key: v1-xavi
           shared-key: release-${{ matrix.target }}
       - uses: nttld/setup-ndk@v1
         if: startsWith(matrix.platform, 'android-')
@@ -111,8 +115,8 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag || 'nightly' }}
         run: |
           python3 scripts/package_release.py sdk --tag "$TAG"
-          python3 -m zipfile -e target/release-assets/xavi-sdk.zip target/sdk-build
-          cd target/sdk-build/xavi
+          python3 -m zipfile -e target/release-assets/xavi-sdk.zip "$RUNNER_TEMP/xavi-sdk-build"
+          cd "$RUNNER_TEMP/xavi-sdk-build/xavi"
           if [[ "$PLATFORM" == android-* ]]; then
             cargo ndk -t "$TARGET" --platform 28 build --release --locked -p xavi-backend -p xavi-platform --examples
           else
@@ -124,8 +128,8 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           TAG: ${{ needs.plan.outputs.tag || 'nightly' }}
         run: |
-          cargo build --manifest-path target/sdk-build/xavi/Cargo.toml --release --locked -p xavi-bindgen --bin xavi-haxe
-          executable=target/sdk-build/xavi/target/release/xavi-haxe
+          cargo build --manifest-path "$RUNNER_TEMP/xavi-sdk-build/xavi/Cargo.toml" --release --locked -p xavi-bindgen --bin xavi-haxe
+          executable=target/release/xavi-haxe
           if [[ "$PLATFORM" == windows-* ]]; then executable="$executable.exe"; fi
           "$executable" ash target/generated/ash
           "$executable" rayzor target/generated/rayzor
@@ -163,7 +167,10 @@ jobs:
         with:
           name: sdk
           path: target/release-assets
-      - run: python3 scripts/package_release.py checksums target/release-assets --complete
+      - name: Preserve the SDK by revision and checksum the complete release
+        run: |
+          python3 scripts/package_release.py snapshot target/release-assets
+          python3 scripts/package_release.py checksums target/release-assets --complete
       - uses: actions/upload-artifact@v7
         with:
           name: release
@@ -195,6 +202,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: |
             release/*.zip
+            release/*.sha256
             release/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true

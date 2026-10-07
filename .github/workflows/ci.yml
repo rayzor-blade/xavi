@@ -16,6 +16,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
+    env:
+      # Keep Cargo artifacts cached even when testing an SDK under RUNNER_TEMP.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/xavi/target
     defaults:
       run:
         shell: bash
@@ -35,6 +38,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: xavi
+          # Invalidate old caches containing extracted SDK source trees.
+          prefix-key: v1-xavi
+          # Standalone CI and Release's reusable check run concurrently.
+          key: ${{ github.workflow }}
       - name: Install Linux audio filter test dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-plugins-base
@@ -51,5 +58,5 @@ jobs:
         run: |
           python3 scripts/test_release.py
           python3 scripts/package_release.py sdk
-          python3 -m zipfile -e target/release-assets/xavi-sdk.zip target/sdk-smoke
-          cargo test --manifest-path target/sdk-smoke/xavi/Cargo.toml -p xavi-core -p xavi-bindgen --locked
+          python3 -m zipfile -e target/release-assets/xavi-sdk.zip "$RUNNER_TEMP/xavi-sdk-smoke"
+          cargo test --manifest-path "$RUNNER_TEMP/xavi-sdk-smoke/xavi/Cargo.toml" -p xavi-core -p xavi-bindgen --locked
