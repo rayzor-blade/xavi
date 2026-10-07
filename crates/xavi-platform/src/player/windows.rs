@@ -73,6 +73,12 @@ impl NativePlayer {
     pub fn command(&mut self, command: i32, value: f64) -> Result<()> {
         self.call(move |b| b.command(command, value))
     }
+    pub fn set_equalizer(&mut self, settings: EqualizerSettings) -> Result<()> {
+        self.call(move |b| {
+            b.check()?;
+            b.equalizer.set(settings)
+        })
+    }
     pub fn frame(&mut self) -> Result<Option<Arc<VideoFrame>>> {
         self.call(Backend::frame)
     }
@@ -120,6 +126,7 @@ impl IMFMediaEngineNotify_Impl for Notify_Impl {
     }
 }
 struct Backend {
+    equalizer: equalizer::Control,
     engine: IMFMediaEngine,
     imaging: IWICImagingFactory,
     bitmap: Option<IWICBitmap>,
@@ -150,7 +157,15 @@ impl Backend {
             let imaging = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
                 .map_err(failure)?;
             let engine = factory.CreateInstance(0, &attributes).map_err(failure)?;
+            let equalizer = equalizer::Control::default();
+            let effect = windows_equalizer::create(equalizer.clone());
+            engine
+                .cast::<IMFMediaEngineEx>()
+                .map_err(failure)?
+                .InsertAudioEffect(&effect, false)
+                .map_err(failure)?;
             let b = Self {
+                equalizer,
                 engine,
                 imaging,
                 bitmap: None,
@@ -173,6 +188,7 @@ impl Backend {
         }
     }
     fn check(&self) -> Result<()> {
+        self.equalizer.check()?;
         let code = self.failure.load(Ordering::Acquire);
         if code != 0 {
             Err(failure(format!("playback error {code}")))
@@ -214,7 +230,11 @@ impl Backend {
                 3 => self.engine.SetVolume(value),
                 _ => return Err(Error::invalid("unknown playback command")),
             }
-            .map_err(failure)
+            .map_err(failure)?;
+            if command == 2 {
+                self.equalizer.reset();
+            }
+            Ok(())
         }
     }
     fn frame(&mut self) -> Result<Option<Arc<VideoFrame>>> {

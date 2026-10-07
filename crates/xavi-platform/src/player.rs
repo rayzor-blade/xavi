@@ -4,6 +4,16 @@
 use std::path::Path;
 use std::sync::Arc;
 use xavi_core::{Error, Result, VideoFrame};
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+))]
+pub(crate) mod equalizer;
+#[cfg(target_os = "windows")]
+mod windows_equalizer;
+use xavi_core::equalizer::Settings as EqualizerSettings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -56,6 +66,11 @@ mod native {
         pub fn frame(&mut self) -> Result<Option<Arc<VideoFrame>>> {
             unreachable!()
         }
+        pub fn set_equalizer(&mut self, _: EqualizerSettings) -> Result<()> {
+            Err(Error::unsupported(
+                "no native playback backend for this target",
+            ))
+        }
     }
 }
 
@@ -105,6 +120,14 @@ impl Player {
             return Err(Error::invalid("volume must be in 0..=1"));
         }
         self.native.command(3, volume)
+    }
+    /// Copy settings into the native audio path. The source equalizer can be
+    /// edited or closed independently; call again to apply subsequent edits.
+    pub fn set_equalizer(&mut self, settings: EqualizerSettings) -> Result<()> {
+        self.native.set_equalizer(settings)
+    }
+    pub fn clear_equalizer(&mut self) -> Result<()> {
+        self.set_equalizer(EqualizerSettings::default())
     }
     pub fn poll_frame(&mut self) -> Result<bool> {
         // Check affinity/failure even if a prior call already polled a frame.

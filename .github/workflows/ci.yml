@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: xavi
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: xavi
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: ./xavi/.github/actions/sources
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: xavi
+      - name: Install Linux audio filter test dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-plugins-base
+      - run: cargo fmt -p xavi-core -p xavi-backend -p xavi-platform -p xavi-bindgen -p xavi-check -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: CPU, generated ABI, and platform unit tests
+        run: |
+          cargo test -p xavi-core -p xavi-backend -p xavi-bindgen -p xavi-check --locked
+          cargo test -p xavi-platform --lib --test playback --locked
+      - name: Native codec and container integration tests
+        if: runner.os == 'macOS'
+        run: cargo test -p xavi-platform --test native --locked
+      - name: Package and relocate the SDK
+        run: |
+          python3 scripts/test_release.py
+          python3 scripts/package_release.py sdk
+          python3 -m zipfile -e target/release-assets/xavi-sdk.zip target/sdk-smoke
+          cargo test --manifest-path target/sdk-smoke/xavi/Cargo.toml -p xavi-core -p xavi-bindgen --locked

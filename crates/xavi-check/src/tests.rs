@@ -26,6 +26,40 @@ fn no_errors() {
 }
 
 #[test]
+fn equalizer_generated_handles_validate_and_preserve_media_ownership() {
+    let eq = AudioEqualizer::create(2);
+    assert_eq!(AudioEqualizer::bandCount(&eq), 2);
+    AudioEqualizer::setBand(&eq, 0, 1000.0, 6.0, 1.0);
+    assert_eq!(AudioEqualizer::bandGain(&eq, 0), 6.0);
+    assert!(AudioEqualizer::bandEnabled(&eq, 0));
+    AudioEqualizer::setBand(&eq, -1, 1000.0, 6.0, 1.0);
+    AudioEqualizer::setPreamp(&eq, f64::NAN);
+    assert_eq!(host::raised().len(), 2);
+    AudioEqualizer::setPreamp(&eq, -6.0);
+    AudioEqualizer::setBypass(&eq, true);
+    let input = audio(&[128, 192, 64]);
+    let output = AudioEqualizer::process(&eq, &input);
+    AudioEqualizer::close(&eq);
+    AudioEqualizer::close(&eq);
+    AudioData::close(&input);
+    assert_eq!(AudioData::timestamp(&output), -9);
+    let bytes = Buffer::new(&[0; 12]);
+    AudioData::copyTo(&output, bytes.writable(), &AudioDataCopyToOptions::new(0));
+    let actual: Vec<_> = unsafe { bytes.as_slice() }
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_ne_bytes(*b))
+        .collect();
+    assert_eq!(actual, [0.0, 0.5, -0.5]);
+    AudioData::close(&output);
+    no_errors();
+    assert_eq!(AudioEqualizer::bandCount(&eq), 0);
+    assert_eq!(host::raised().len(), 1);
+    assert_eq!(live(), 0);
+}
+
+#[test]
 fn generated_audio_copies_bytes_and_clones_close_independently() {
     let source = Buffer::new(&[128, 192, 255]);
     let init = AudioDataInit::new(AudioSampleFormat::U8.into(), 48_000.0, 3, 1, -9, source);

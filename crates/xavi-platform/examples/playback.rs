@@ -24,6 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("playback <local movie> [frame.ppm]");
     let capture = std::env::args().nth(2);
     let mut player = Player::open(path)?;
+    let mut equalizer = xavi_core::equalizer::Settings::new(3)?;
+    equalizer.set_band(0, 100.0, 6.0, 0.7)?;
+    equalizer.set_band(1, 1000.0, -2.0, 1.0)?;
+    equalizer.set_band(2, 8000.0, 3.0, 0.7)?;
+    equalizer.set_preamp(-9.0)?;
+    player.set_equalizer(equalizer)?;
     player.play()?;
     let started = Instant::now();
     let mut frames = 0;
@@ -63,6 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let info = player.info()?;
         match phase {
             0 if frames >= 5 && info.position > 0.2 => {
+                equalizer.set_bypass(true);
+                player.set_equalizer(equalizer)?;
                 assert!(player.seek(-1.0).is_err());
                 assert!(player.set_volume(2.0).is_err());
                 player.pause()?;
@@ -86,6 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 assert_eq!(info.volume, 0.0);
                 player.set_volume(1.0)?;
+                player.clear_equalizer()?;
+                equalizer.set_bypass(false);
+                player.set_equalizer(equalizer)?;
                 player.play()?;
                 at = Instant::now();
                 phase = 3;
@@ -96,7 +107,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 phase = 4;
             }
             4 if info.state == PlaybackState::Ended => {
-                println!("PLAYBACK PASS: {frames} frames, pause, seek, volume, resume, EOF");
+                println!(
+                    "PLAYBACK PASS: {frames} frames, pause, seek, volume, equalizer, resume, EOF"
+                );
                 break;
             }
             _ => {}

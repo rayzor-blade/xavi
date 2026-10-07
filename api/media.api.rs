@@ -142,6 +142,39 @@ trait AudioData {
     fn close(this: &AudioData);
 }
 
+trait AudioEqualizer {
+    #[native(equalizer_create)]
+    fn create(bands: i32) -> Box<AudioEqualizer>;
+    #[native(equalizer_band_count)]
+    fn bandCount(this: &AudioEqualizer) -> i32;
+    #[native(equalizer_set_band)]
+    fn setBand(this: &AudioEqualizer, index: i32, frequency: f64, gainDb: f64, q: f64);
+    #[native(equalizer_disable_band)]
+    fn disableBand(this: &AudioEqualizer, index: i32);
+    #[native(equalizer_band_frequency)]
+    fn bandFrequency(this: &AudioEqualizer, index: i32) -> f64;
+    #[native(equalizer_band_gain)]
+    fn bandGain(this: &AudioEqualizer, index: i32) -> f64;
+    #[native(equalizer_band_q)]
+    fn bandQ(this: &AudioEqualizer, index: i32) -> f64;
+    #[native(equalizer_band_enabled)]
+    fn bandEnabled(this: &AudioEqualizer, index: i32) -> bool;
+    #[native(equalizer_set_preamp)]
+    fn setPreamp(this: &AudioEqualizer, gainDb: f64);
+    #[native(equalizer_preamp)]
+    fn preamp(this: &AudioEqualizer) -> f64;
+    #[native(equalizer_set_bypass)]
+    fn setBypass(this: &AudioEqualizer, bypass: bool);
+    #[native(equalizer_bypassed)]
+    fn bypassed(this: &AudioEqualizer) -> bool;
+    #[native(equalizer_process)]
+    fn process(this: &AudioEqualizer, data: &AudioData) -> Box<AudioData>;
+    #[native(equalizer_reset)]
+    fn reset(this: &AudioEqualizer);
+    #[native(equalizer_close)]
+    fn close(this: &AudioEqualizer);
+}
+
 trait VideoFrame {
     #[native(video_retime)]
     fn retime(this: &VideoFrame, timestamp: i64, duration: i64) -> Box<VideoFrame>;
@@ -255,6 +288,10 @@ trait MediaPlayer {
     fn seek(this: &MediaPlayer, seconds: f64);
     #[native(player_set_volume)]
     fn setVolume(this: &MediaPlayer, volume: f64);
+    #[native(player_set_equalizer)]
+    fn setEqualizer(this: &MediaPlayer, equalizer: &AudioEqualizer);
+    #[native(player_clear_equalizer)]
+    fn clearEqualizer(this: &MediaPlayer);
     #[native(player_poll_frame)]
     fn pollFrame(this: &MediaPlayer) -> bool;
     #[native(player_take_frame)]

@@ -29,6 +29,7 @@ pub enum Kind {
     MediaCodec = 9,
     MediaMuxer = 10,
     MediaDemuxer = 11,
+    AudioEqualizer = 12,
 }
 
 impl Kind {
@@ -48,6 +49,7 @@ impl Kind {
             9 => Some(Self::MediaCodec),
             10 => Some(Self::MediaMuxer),
             11 => Some(Self::MediaDemuxer),
+            12 => Some(Self::AudioEqualizer),
             _ => None,
         }
     }

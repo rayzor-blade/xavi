@@ -1,0 +1,25 @@
+name: Pinned generator source
+description: Fetch the x-idl revision used to generate all xavi runtime interfaces.
+runs:
+  using: composite
+  steps:
+    - id: pin
+      shell: bash
+      working-directory: xavi
+      run: |
+        python3 scripts/package_release.py pins
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        source = json.load(open('release-sources.json'))['x-idl']
+        print(f"repository={source['repository']}")
+        print(f"revision={source['revision']}")
+        PY
+    - uses: actions/checkout@v7
+      with:
+        repository: ${{ steps.pin.outputs.repository }}
+        ref: ${{ steps.pin.outputs.revision }}
+        path: x-idl
+        persist-credentials: false
+    - shell: bash
+      working-directory: xavi
+      run: python3 scripts/package_release.py pins --checkouts

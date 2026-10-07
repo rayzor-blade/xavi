@@ -12,9 +12,10 @@
 //! CPU VideoFrame copies complete synchronously; an adapter must still return
 //! the IDL's future, resolved only after the destination writes finish.
 //!
-//! [`codec`] exposes native audio/video sessions for Rust hosts. Runtime codec
-//! bindings, container reading, device capture, browser agents and GPU surfaces
-//! are separate work. [`mux`] writes encoded audio/video to native MP4 files.
+//! [`codec`] exposes native audio/video sessions for Rust hosts; [`pipeline`]
+//! supplies the polled runtime codec and muxer surface. [`demux`] reads MP4
+//! packets, and [`mux`] writes encoded audio/video to native MP4 files.
+//! Device capture, browser agents and GPU surfaces remain separate work.
 //! [`player`] supplies native clocked file playback and polled video frames;
 //! the platform backends also own audio output and playback synchronization.
 //!
@@ -26,6 +27,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 pub mod codec;
 pub mod demux;
+pub mod equalizer;
 pub mod mux;
 pub mod pipeline;
 pub mod player;
@@ -50,6 +52,7 @@ struct Resources {
     codecs: Slab<pipeline::Session>,
     writers: Slab<pipeline::Writer>,
     readers: Slab<demux::Demuxer>,
+    equalizers: Slab<Mutex<xavi_core::equalizer::AudioEqualizer>>,
 }
 
 /// Thread-safe resource tables. No global state, runtime allocation or callbacks.
@@ -78,6 +81,7 @@ impl MediaBackend {
                 codecs: Slab::new(Kind::MediaCodec),
                 writers: Slab::new(Kind::MediaMuxer),
                 readers: Slab::new(Kind::MediaDemuxer),
+                equalizers: Slab::new(Kind::AudioEqualizer),
             }),
         }
     }
@@ -262,6 +266,9 @@ impl MediaBackend {
             Some(Kind::MediaDemuxer) => {
                 resources.readers.remove(handle);
             }
+            Some(Kind::AudioEqualizer) => {
+                resources.equalizers.remove(handle);
+            }
             None => {}
         }
         Ok(())
@@ -279,7 +286,8 @@ impl MediaBackend {
             + r.queues.len()
             + r.codecs.len()
             + r.writers.len()
-            + r.readers.len())
+            + r.readers.len()
+            + r.equalizers.len())
     }
 
     fn resources(&self) -> Result<MutexGuard<'_, Resources>> {

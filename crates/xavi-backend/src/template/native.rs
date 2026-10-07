@@ -615,3 +615,27 @@ pub fn demux_has_video(this: i32) -> bool { call(|m| { let reader=m.readers(this
 pub fn demux_video_configuration(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let config=media_lock(&reader.configs)?[1].clone().ok_or_else(|| core::Error::invalid("track is absent"))?; m.insert_configs(config) }) }
 pub fn demux_video_status(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; Ok(status_out(media_lock(&reader.video)?.status()?)) }) }
 pub fn demux_read_video(this: i32) -> i32 { call(|m| { let reader=m.readers(this)?; reader.worker.check()?; let item=media_lock(&reader.video)?.take()?; retain_item(m,item) }) }
+
+fn equalizer_index(index: i32) -> core::Result<usize> {
+    usize::try_from(index).map_err(|_| core::Error::invalid("equalizer band index out of range"))
+}
+pub fn equalizer_create(bands: i32) -> i32 { call(|m| m.equalizer_create(equalizer_index(bands)?)) }
+pub fn equalizer_band_count(this: i32) -> i32 { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.bands().len() as i32))) }
+pub fn equalizer_set_band(this: i32, index: i32, frequency: f64, gain: f64, q: f64) { call(|m| m.with_equalizer(this, |eq| eq.settings.set_band(equalizer_index(index)?, frequency, gain, q))) }
+pub fn equalizer_disable_band(this: i32, index: i32) { call(|m| m.with_equalizer(this, |eq| eq.settings.disable_band(equalizer_index(index)?))) }
+pub fn equalizer_band_frequency(this: i32, index: i32) -> f64 { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.band(equalizer_index(index)?)?.frequency))) }
+pub fn equalizer_band_gain(this: i32, index: i32) -> f64 { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.band(equalizer_index(index)?)?.gain_db))) }
+pub fn equalizer_band_q(this: i32, index: i32) -> f64 { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.band(equalizer_index(index)?)?.q))) }
+pub fn equalizer_band_enabled(this: i32, index: i32) -> bool { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.band(equalizer_index(index)?)?.enabled))) }
+pub fn equalizer_set_preamp(this: i32, gain: f64) { call(|m| m.with_equalizer(this, |eq| eq.settings.set_preamp(gain))) }
+pub fn equalizer_preamp(this: i32) -> f64 { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.preamp_db()))) }
+pub fn equalizer_set_bypass(this: i32, bypass: bool) { call(|m| m.with_equalizer(this, |eq| { eq.settings.set_bypass(bypass); Ok(()) })) }
+pub fn equalizer_bypassed(this: i32) -> bool { call(|m| m.with_equalizer(this, |eq| Ok(eq.settings.bypassed()))) }
+pub fn equalizer_process(this: i32, data: i32) -> i32 { call(|m| m.equalizer_process(this, data)) }
+pub fn equalizer_reset(this: i32) { call(|m| m.with_equalizer(this, |eq| { eq.reset(); Ok(()) })) }
+pub fn equalizer_close(this: i32) { close(this, core::handles::Kind::AudioEqualizer); }
+pub fn player_set_equalizer(this: i32, equalizer: i32) { call(|m| {
+    let settings = m.with_equalizer(equalizer, |eq| Ok(eq.settings))?;
+    m.with_player(this, |player| player.set_equalizer(settings))
+}) }
+pub fn player_clear_equalizer(this: i32) { call(|m| m.with_player(this, |player| player.clear_equalizer())) }

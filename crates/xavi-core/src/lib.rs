@@ -11,6 +11,7 @@ mod audio;
 mod chunk;
 pub mod codec;
 mod edit;
+pub mod equalizer;
 mod error;
 mod format;
 pub mod handles;

@@ -7,6 +7,7 @@ fn every_runtime_generates_the_implemented_surface() {
         syn::parse_file(&source).unwrap();
         for name in [
             "AudioData",
+            "AudioEqualizer",
             "VideoFrame",
             "EncodedAudioChunk",
             "EncodedVideoChunk",
@@ -51,5 +52,7 @@ fn haxe_uses_typed_buffers_counts_and_copy_completion() {
         assert!(file("MediaPlayer").contains("pollFrame():Bool"));
         assert!(file("MediaPlayer").contains("takeFrame():VideoFrame"));
         assert!(file("MediaPlayer").contains("seek(seconds:Float):Void"));
+        assert!(file("AudioEqualizer").contains("process(data:AudioData):AudioData"));
+        assert!(file("MediaPlayer").contains("setEqualizer(equalizer:AudioEqualizer):Void"));
     }
 }

@@ -100,6 +100,9 @@ impl NativePlayer {
     pub fn command(&mut self, c: i32, v: f64) -> Result<()> {
         self.call(move |b| b.command(c, v))
     }
+    pub fn set_equalizer(&mut self, settings: EqualizerSettings) -> Result<()> {
+        self.call(move |b| b.equalizer.control.set(settings))
+    }
     pub fn frame(&mut self) -> Result<Option<Arc<VideoFrame>>> {
         self.call(|b| {
             b.check()?;
@@ -368,7 +371,7 @@ struct Audio {
     channels: i32,
     base: f64,
     written: i64,
-    pending: Vec<i16>,
+    pending: Vec<f32>,
     offset: usize,
     packet_frame: i64,
 }
@@ -388,7 +391,7 @@ impl Audio {
             let mut builder = ptr::null_mut();
             audio(sys::AAudio_createStreamBuilder(&mut builder))?;
             sys::AAudioStreamBuilder_setDirection(builder, 0);
-            sys::AAudioStreamBuilder_setFormat(builder, 1);
+            sys::AAudioStreamBuilder_setFormat(builder, 2); // AAUDIO_FORMAT_PCM_FLOAT
             sys::AAudioStreamBuilder_setSampleRate(builder, rate);
             sys::AAudioStreamBuilder_setChannelCount(builder, channels);
             sys::AAudioStreamBuilder_setSharingMode(builder, 1);
@@ -411,7 +414,7 @@ impl Audio {
             };
             if sys::AAudioStream_getSampleRate(stream) != rate
                 || sys::AAudioStream_getChannelCount(stream) != channels
-                || sys::AAudioStream_getFormat(stream) != 1
+                || sys::AAudioStream_getFormat(stream) != 2
             {
                 return Err(Error::unsupported(
                     "audio device could not negotiate decoded PCM",
@@ -459,10 +462,10 @@ impl Audio {
         } else {
             ((self.pending.len() - self.offset) / channels).min(1024)
         };
-        let mut samples = vec![0i16; count * channels];
+        let mut samples = vec![0f32; count * channels];
         if gap == 0 {
             for (out, input) in samples.iter_mut().zip(&self.pending[self.offset..]) {
-                *out = (*input as f64 * volume).round() as i16;
+                *out = (*input as f64 * volume).clamp(-1.0, 1.0) as f32;
             }
         }
         let n = unsafe {
@@ -477,6 +480,7 @@ impl Audio {
     }
 }
 struct Backend {
+    equalizer: equalizer::Stream,
     video: Option<Track>,
     sound: Option<Track>,
     audio: Option<Audio>,
@@ -504,6 +508,7 @@ impl Backend {
             .map_or(0.0, |t| t.duration)
             .max(sound.as_ref().map_or(0.0, |t| t.duration));
         Ok(Self {
+            equalizer: equalizer::Stream::new(equalizer::Control::default()),
             video,
             sound,
             audio: None,
@@ -521,6 +526,7 @@ impl Backend {
         })
     }
     fn check(&self) -> Result<()> {
+        self.equalizer.control.check()?;
         if let Some(e) = &self.failure {
             Err(e.clone())
         } else {
@@ -566,6 +572,7 @@ impl Backend {
                     t.seek(value)?;
                 }
                 self.audio = None;
+                self.equalizer.control.reset();
                 self.frame = None;
                 self.target = value;
                 self.position = value;
@@ -629,7 +636,7 @@ impl Backend {
                                 sys::AMediaCodec_getOutputBuffer(t.codec, index, &mut capacity);
                             if data.is_null()
                                 || info.offset < 0
-                                || info.size as usize > crate::MAX_BYTES
+                                || info.size as usize > crate::MAX_BYTES / 2
                                 || (info.offset as usize)
                                     .checked_add(info.size as usize)
                                     .is_none_or(|n| n > capacity)
@@ -641,11 +648,29 @@ impl Backend {
                                 data.add(info.offset as usize),
                                 info.size as usize,
                             );
-                            a.pending = bytes
+                            // Preserve boosted headroom until volume is applied
+                            // at the AAudio boundary. Process each decoded block
+                            // once even when a device write accepts only part.
+                            let mut pcm: Vec<u8> = bytes
                                 .as_chunks::<2>()
                                 .0
                                 .iter()
-                                .map(|b| i16::from_ne_bytes([b[0], b[1]]))
+                                .flat_map(|b| {
+                                    (f32::from(i16::from_ne_bytes(*b)) / 32768.0).to_ne_bytes()
+                                })
+                                .collect();
+                            self.equalizer.interleaved(
+                                &mut pcm,
+                                rate as f64,
+                                channels as usize,
+                                true,
+                                false,
+                            )?;
+                            a.pending = pcm
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .map(|b| f32::from_ne_bytes(*b))
                                 .collect();
                             a.offset = 0;
                             a.packet_frame = ((info.presentationTimeUs as f64 / 1e6 - a.base)

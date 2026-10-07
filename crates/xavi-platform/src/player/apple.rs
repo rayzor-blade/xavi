@@ -24,14 +24,18 @@ struct Frame {
 }
 unsafe extern "C" {
     fn xavi_player_main_thread() -> i32;
-    fn xavi_player_open(path: *const c_char, error: *mut c_char) -> *mut c_void;
+    fn xavi_player_open(
+        path: *const c_char,
+        control: *const c_void,
+        error: *mut c_char,
+    ) -> *mut c_void;
     fn xavi_player_command(ctx: *mut c_void, command: i32, value: f64, error: *mut c_char) -> i32;
     fn xavi_player_info(ctx: *mut c_void, out: *mut Info, error: *mut c_char) -> i32;
     fn xavi_player_frame(ctx: *mut c_void, out: *mut Frame, error: *mut c_char) -> i32;
     fn xavi_player_frame_release(frame: *mut Frame);
     fn xavi_player_drop(ctx: *mut c_void);
 }
-pub struct NativePlayer(NonNull<c_void>);
+pub struct NativePlayer(NonNull<c_void>, equalizer::Control);
 // Every entry point checks the main thread before touching AVPlayer. Drop
 // dispatches there when necessary. Moving this owner does not move native work.
 unsafe impl Send for NativePlayer {}
@@ -76,22 +80,34 @@ impl NativePlayer {
         )
         .map_err(|_| Error::invalid("path contains NUL"))?;
         let mut message = [0; 512];
-        let ptr = unsafe { xavi_player_open(path.as_ptr(), message.as_mut_ptr()) };
+        let control = equalizer::Control::default();
+        let ptr = unsafe {
+            xavi_player_open(
+                path.as_ptr(),
+                (&control as *const equalizer::Control).cast(),
+                message.as_mut_ptr(),
+            )
+        };
         NonNull::new(ptr)
-            .map(Self)
+            .map(|ptr| Self(ptr, control))
             .ok_or_else(|| error(-1, &message))
     }
     pub fn command(&mut self, command: i32, value: f64) -> Result<()> {
+        self.1.check()?;
         let mut message = [0; 512];
         let status =
             unsafe { xavi_player_command(self.0.as_ptr(), command, value, message.as_mut_ptr()) };
         if status < 0 {
             Err(error(status, &message))
         } else {
+            if command == 2 {
+                self.1.reset();
+            }
             Ok(())
         }
     }
     pub fn info(&mut self) -> Result<PlaybackInfo> {
+        self.1.check()?;
         let mut info = Info::default();
         let mut message = [0; 512];
         let status = unsafe { xavi_player_info(self.0.as_ptr(), &mut info, message.as_mut_ptr()) };
@@ -114,6 +130,7 @@ impl NativePlayer {
         })
     }
     pub fn frame(&mut self) -> Result<Option<Arc<VideoFrame>>> {
+        self.1.check()?;
         let mut frame = Frame::default();
         let mut message = [0; 512];
         let status =
@@ -144,5 +161,9 @@ impl NativePlayer {
             data,
             Some(&layout),
         )?)))
+    }
+    pub fn set_equalizer(&mut self, settings: EqualizerSettings) -> Result<()> {
+        self.info()?; // Enforce the player's main-thread affinity.
+        self.1.set(settings)
     }
 }

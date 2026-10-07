@@ -785,3 +785,38 @@ partial interface VideoDecoder {
     VideoFrame read();
     undefined finish();
 };
+
+// Stateful parametric PCM equalizer. One instance represents one stream.
+// Bands start disabled. Frequency: 1..96000 Hz, gain: -24..24 dB, Q: 0.1..20.
+// Bands at/above the input Nyquist frequency are inactive. Preamp: -60..0 dB.
+// process returns owned interleaved F32, preserving sample rate, channels and
+// timestamp; it never clips finite output. Reduce preamp for boost headroom.
+// Supports 1000..384000 Hz, 1..32 channels, blocks <=64 MiB after F32 conversion.
+// History persists across contiguous blocks. A timestamp gap (>2 us) or format
+// change resets history; reset also starts a new segment with unchanged settings.
+// Live setting/bypass changes transition over 10 ms. Bypass includes preamp.
+interface AudioEqualizer {
+    static AudioEqualizer create(long bands); // 1..16
+    long bandCount();
+    undefined setBand(long index, double frequency, double gainDb, double q);
+    undefined disableBand(long index);
+    double bandFrequency(long index);
+    double bandGain(long index);
+    double bandQ(long index);
+    boolean bandEnabled(long index);
+    undefined setPreamp(double gainDb);
+    double preamp();
+    undefined setBypass(boolean bypass);
+    boolean bypassed();
+    AudioData process(AudioData data);
+    undefined reset();
+    undefined close();
+};
+
+partial interface MediaPlayer {
+    // Copy settings only. The player owns independent DSP history and follows
+    // the decoded audio format. Call again to apply later edits to the source.
+    // Closing the source equalizer does not disable playback equalization.
+    undefined setEqualizer(AudioEqualizer equalizer);
+    undefined clearEqualizer();
+};

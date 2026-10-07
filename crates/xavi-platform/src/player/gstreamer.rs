@@ -1,12 +1,15 @@
 //! Clocked system playback. Autoplugging explicitly rejects gst-libav on each
 //! decodebin, without changing the process-wide plugin registry or ranks.
-use super::{Api, Mini, Ptr, failure};
+use super::{Api, Buffer, MapInfo, Mini, Ptr, failure};
+use crate::player::equalizer::{Control, Stream};
 use crate::player::{PlaybackInfo, PlaybackState};
+use std::sync::Mutex;
 use std::{
     ffi::{CStr, CString, c_char},
     path::Path,
     sync::Arc,
 };
+use xavi_core::equalizer::Settings;
 use xavi_core::{Error, ErrorKind, Result, VideoDescriptor, VideoFrame, VideoPixelFormat};
 
 type Set = unsafe extern "C" fn(Ptr, *const c_char, ...);
@@ -17,6 +20,7 @@ struct Message {
 }
 
 pub struct NativePlayer {
+    equalizer: Control,
     api: Arc<Api>,
     set: Set,
     pipeline: Ptr,
@@ -33,6 +37,72 @@ pub struct NativePlayer {
 // GStreamer objects are thread-safe; this owner is only accessed through &mut
 // or the backend Mutex. Callbacks use the immutable, process-lifetime Api.
 unsafe impl Send for NativePlayer {}
+
+struct AudioTap {
+    api: Arc<Api>,
+    stream: Mutex<Stream>,
+    control: Control,
+}
+unsafe extern "C" fn audio_tap_drop(data: Ptr, _: Ptr) {
+    drop(unsafe { Box::from_raw(data.cast::<AudioTap>()) });
+}
+unsafe extern "C" fn audio_tap(identity: Ptr, buffer: *mut Buffer, data: Ptr) {
+    let tap = unsafe { &*data.cast::<AudioTap>() };
+    let a = &tap.api;
+    let result = (|| {
+        let mut stream = tap
+            .stream
+            .try_lock()
+            .map_err(|_| failure("concurrent audio callback"))?;
+        unsafe {
+            let pad = (a.gst_element_get_static_pad)(identity, c"sink".as_ptr());
+            if pad.is_null() {
+                return Err(failure("missing audio pad"));
+            }
+            let caps = (a.gst_pad_get_current_caps)(pad);
+            (a.gst_object_unref)(pad);
+            if caps.is_null() {
+                return Err(failure("missing audio caps"));
+            }
+            let structure = (a.gst_caps_get_structure)(caps, 0);
+            let (mut rate, mut channels) = (0, 0);
+            if !structure.is_null() {
+                (a.gst_structure_get_int)(structure, c"rate".as_ptr(), &mut rate);
+                (a.gst_structure_get_int)(structure, c"channels".as_ptr(), &mut channels);
+            }
+            (a.gst_mini_object_unref)(caps);
+            let mut map = MapInfo::default();
+            // Identity is an in-place GstBaseTransform, which supplies writable
+            // buffers to transform_ip/handoff (it does not enable passthrough).
+            if buffer.is_null() || (a.gst_buffer_map)(buffer, &mut map, 3) == 0 {
+                return Err(failure("audio buffer is not writable"));
+            }
+            let result = if map.size == 0 {
+                Ok(())
+            } else if map.data.is_null() || map.size > crate::MAX_BYTES {
+                Err(failure("invalid PCM buffer"))
+            } else {
+                let bytes = std::slice::from_raw_parts_mut(map.data, map.size);
+                let result = stream.interleaved(
+                    bytes,
+                    rate as f64,
+                    channels as usize,
+                    true,
+                    (*buffer).mini.flags & 64 != 0,
+                );
+                if result.is_err() {
+                    bytes.fill(0);
+                }
+                result
+            };
+            (a.gst_buffer_unmap)(buffer, &mut map);
+            result
+        }
+    })();
+    if result.is_err() {
+        tap.control.fail();
+    }
+}
 
 unsafe extern "C" fn select(_: Ptr, _: Ptr, _: Ptr, factory: Ptr, data: Ptr) -> i32 {
     let api = unsafe { &*data.cast::<Api>() };
@@ -136,6 +206,7 @@ impl NativePlayer {
             }
             let bus = (api.gst_element_get_bus)(pipeline);
             let player = Self {
+                equalizer: Control::default(),
                 api,
                 set,
                 pipeline,
@@ -153,6 +224,48 @@ impl NativePlayer {
                 return Err(Error::unsupported("system GStreamer appsink/bus missing"));
             }
             let a = &player.api;
+            let format = if cfg!(target_endian = "big") {
+                "F32BE"
+            } else {
+                "F32LE"
+            };
+            let chain = CString::new(format!("audioconvert ! audio/x-raw,format={format},layout=interleaved ! identity name=xavi_equalizer signal-handoffs=true ! audioconvert")).unwrap();
+            let mut error = std::ptr::null_mut();
+            let filter = (a.gst_parse_bin_from_description)(chain.as_ptr(), 1, &mut error);
+            if !error.is_null() || filter.is_null() {
+                if !filter.is_null() {
+                    (a.gst_object_unref)(filter);
+                }
+                return Err(Error::unsupported(a.take_error(error)));
+            }
+            (a.g_object_ref_sink)(filter);
+            let identity = (a.gst_bin_get_by_name)(filter, c"xavi_equalizer".as_ptr());
+            if identity.is_null() {
+                (a.gst_object_unref)(filter);
+                return Err(failure("missing equalizer identity element"));
+            }
+            let control = player.equalizer.clone();
+            let tap = Box::new(AudioTap {
+                api: a.clone(),
+                stream: Mutex::new(Stream::new(control.clone())),
+                control,
+            });
+            (a.g_signal_connect_data)(
+                identity,
+                c"handoff".as_ptr(),
+                audio_tap as *const () as Ptr,
+                Box::into_raw(tap).cast(),
+                audio_tap_drop as *const () as Ptr,
+                0,
+            );
+            set(
+                pipeline,
+                c"audio-filter".as_ptr(),
+                filter,
+                std::ptr::null::<c_char>(),
+            );
+            (a.gst_object_unref)(identity);
+            (a.gst_object_unref)(filter);
             let mut error = std::ptr::null_mut();
             let uri = (a.gst_filename_to_uri)(filename.as_ptr(), &mut error);
             if uri.is_null() {
@@ -205,6 +318,7 @@ impl NativePlayer {
         }
     }
     fn messages(&mut self) -> Result<()> {
+        self.equalizer.check()?;
         if let Some(e) = &self.failure {
             return Err(failure(e.clone()));
         }
@@ -306,6 +420,7 @@ impl NativePlayer {
                         return Err(failure("media is not seekable yet"));
                     }
                     self.seeking = true;
+                    self.equalizer.reset();
                     self.ended = false;
                     self.last_pts = None;
                 }
@@ -322,6 +437,10 @@ impl NativePlayer {
             }
         }
         Ok(())
+    }
+    pub fn set_equalizer(&mut self, settings: Settings) -> Result<()> {
+        self.messages()?;
+        self.equalizer.set(settings)
     }
     pub fn frame(&mut self) -> Result<Option<Arc<VideoFrame>>> {
         self.messages()?;
@@ -393,6 +512,78 @@ impl Drop for NativePlayer {
                     (self.api.gst_object_unref)(p);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn clocked_audio_filter_changes_pcm_without_a_device() {
+        // Use the same identity handoff and F32 negotiation as playbin's
+        // audio-filter, but capture its actual output rather than play a tone.
+        let api = Api::get().unwrap();
+        let control = Control::default();
+        let mut settings = Settings::new(1).unwrap();
+        settings.set_band(0, 1000.0, 6.0, 2.0).unwrap();
+        control.set(settings).unwrap();
+        let format = if cfg!(target_endian = "big") {
+            "F32BE"
+        } else {
+            "F32LE"
+        };
+        let description = CString::new(format!("audiotestsrc wave=sine freq=1000 volume=0.1 samplesperbuffer=480 num-buffers=20 ! audioconvert ! audio/x-raw,format={format},rate=48000,channels=2,layout=interleaved ! identity name=eq signal-handoffs=true ! appsink name=out sync=false max-buffers=2")).unwrap();
+        unsafe {
+            let mut error = std::ptr::null_mut();
+            let pipeline = (api.gst_parse_launch)(description.as_ptr(), &mut error);
+            assert!(error.is_null() && !pipeline.is_null());
+            struct Running(Arc<Api>, Ptr);
+            impl Drop for Running {
+                fn drop(&mut self) {
+                    unsafe {
+                        (self.0.gst_element_set_state)(self.1, 1);
+                        (self.0.gst_object_unref)(self.1);
+                    }
+                }
+            }
+            let _running = Running(api.clone(), pipeline);
+            let identity = (api.gst_bin_get_by_name)(pipeline, c"eq".as_ptr());
+            let sink = (api.gst_bin_get_by_name)(pipeline, c"out".as_ptr());
+            assert!(!identity.is_null() && !sink.is_null());
+            let tap = Box::new(AudioTap {
+                api: api.clone(),
+                stream: Mutex::new(Stream::new(control.clone())),
+                control: control.clone(),
+            });
+            (api.g_signal_connect_data)(
+                identity,
+                c"handoff".as_ptr(),
+                audio_tap as *const () as Ptr,
+                Box::into_raw(tap).cast(),
+                audio_tap_drop as *const () as Ptr,
+                0,
+            );
+            (api.gst_object_unref)(identity);
+            assert_ne!((api.gst_element_set_state)(pipeline, 4), 0);
+            let mut energy = 0.0;
+            let mut count = 0;
+            for block in 0..20 {
+                let sample = (api.gst_app_sink_try_pull_sample)(sink, 2_000_000_000);
+                assert!(!sample.is_null(), "missing audio block {block}");
+                let bytes = api.bytes((api.gst_sample_get_buffer)(sample)).unwrap();
+                (api.gst_mini_object_unref)(sample);
+                control.check().unwrap();
+                if block >= 10 {
+                    for sample in bytes.as_chunks::<4>().0 {
+                        energy += f64::from(f32::from_ne_bytes(*sample)).powi(2);
+                        count += 1;
+                    }
+                }
+            }
+            (api.gst_object_unref)(sink);
+            let gain_db = 10.0 * (energy / count as f64 / 0.005).log10();
+            assert!((gain_db - 6.0).abs() < 0.01, "measured {gain_db} dB");
         }
     }
 }

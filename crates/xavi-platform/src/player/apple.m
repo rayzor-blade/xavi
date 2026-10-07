@@ -1,7 +1,49 @@
 #import <AVFoundation/AVFoundation.h>
+#import <MediaToolbox/MediaToolbox.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdatomic.h>
+#include <stdbool.h>
+
+extern void *xavi_eq_stream_new(const void *control);
+extern void xavi_eq_stream_drop(void *stream);
+extern bool xavi_eq_process(void *stream, AudioBuffer *buffers, uint32_t count,
+    uint32_t frames, double rate, uint32_t channels, bool floating, bool planar, bool reset);
+typedef struct {
+  void *stream;
+  AudioStreamBasicDescription format;
+} XaviAudioTap;
+static void tap_init(MTAudioProcessingTapRef tap, void *client, void **storage) { *storage = client; }
+static void tap_finalize(MTAudioProcessingTapRef tap) {
+  XaviAudioTap *state = MTAudioProcessingTapGetStorage(tap);
+  xavi_eq_stream_drop(state->stream);
+  free(state);
+}
+static void tap_prepare(MTAudioProcessingTapRef tap, CMItemCount maxFrames, const AudioStreamBasicDescription *format) {
+  ((XaviAudioTap *)MTAudioProcessingTapGetStorage(tap))->format = *format;
+}
+static void tap_unprepare(MTAudioProcessingTapRef tap) {}
+static void tap_process(MTAudioProcessingTapRef tap, CMItemCount requested,
+    MTAudioProcessingTapFlags flags, AudioBufferList *buffers,
+    CMItemCount *provided, MTAudioProcessingTapFlags *outFlags) {
+  OSStatus status = MTAudioProcessingTapGetSourceAudio(tap, requested, buffers, outFlags, NULL, provided);
+  if (status != noErr) { *provided = 0; return; }
+  XaviAudioTap *state = MTAudioProcessingTapGetStorage(tap);
+  AudioStreamBasicDescription f = state->format;
+  bool floating = (f.mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+  bool valid = f.mFormatID == kAudioFormatLinearPCM &&
+      !(f.mFormatFlags & kAudioFormatFlagIsBigEndian) &&
+      ((floating && f.mBitsPerChannel == 32) ||
+       (!floating && (f.mFormatFlags & kAudioFormatFlagIsSignedInteger) && f.mBitsPerChannel == 16));
+  if (*provided <= 0) return;
+  if (!xavi_eq_process(state->stream, buffers->mBuffers, buffers->mNumberBuffers,
+      (uint32_t)*provided, valid ? f.mSampleRate : 0, f.mChannelsPerFrame,
+      floating, (f.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0,
+      (*outFlags & kMTAudioProcessingTapFlag_StartOfStream) != 0)) {
+    for (UInt32 i = 0; i < buffers->mNumberBuffers; ++i)
+      memset(buffers->mBuffers[i].mData, 0, buffers->mBuffers[i].mDataByteSize);
+  }
+}
 
 // AVPlayer and its notification state stay on the main thread. The Rust owner
 // may be dropped elsewhere; destruction is then dispatched to that thread.
@@ -18,6 +60,9 @@
 @property(nonatomic) BOOL seeking;
 @property(nonatomic) BOOL closed;
 @property(nonatomic) NSUInteger seekGeneration;
+@property(nonatomic) void *equalizer;
+@property(nonatomic) BOOL tapsReady;
+@property(nonatomic) BOOL wantsPlay;
 - (void)close;
 @end
 @implementation XaviPlayback
@@ -35,6 +80,7 @@
   [_player replaceCurrentItemWithPlayerItem:nil];
   _player = nil;
   _output = nil;
+  if (_equalizer) { xavi_eq_stream_drop(_equalizer); _equalizer = NULL; }
 }
 @end
 
@@ -68,13 +114,43 @@ static int check(XaviPlayback *c, char *error) {
     c.seeking = NO;
   NSError *e = c.failure ?: c.player.error ?: c.player.currentItem.error;
   if (e) return fail(error, e.localizedDescription);
+  if (!c.tapsReady && c.player.currentItem.status == AVPlayerItemStatusReadyToPlay) {
+    NSMutableArray *parameters = [NSMutableArray array];
+    for (AVPlayerItemTrack *track in c.player.currentItem.tracks) {
+      if (![track.assetTrack.mediaType isEqualToString:AVMediaTypeAudio]) continue;
+      XaviAudioTap *state = calloc(1, sizeof(XaviAudioTap));
+      if (!state) return fail(error, @"could not allocate equalizer tap");
+      // The retained Rust seed owns the shared control; each track owns history.
+      extern void *xavi_eq_stream_fork(void *seed);
+      state->stream = xavi_eq_stream_fork(c.equalizer);
+      MTAudioProcessingTapCallbacks callbacks = { kMTAudioProcessingTapCallbacksVersion_0,
+          state, tap_init, tap_finalize, tap_prepare, tap_unprepare, tap_process };
+      MTAudioProcessingTapRef tap = NULL;
+      OSStatus status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
+          kMTAudioProcessingTapCreationFlag_PostEffects, &tap);
+      if (status != noErr) {
+        xavi_eq_stream_drop(state->stream); free(state);
+        return fail(error, @"could not install audio equalizer tap");
+      }
+      AVMutableAudioMixInputParameters *p = [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:track.assetTrack];
+      p.audioTapProcessor = tap;
+      CFRelease(tap);
+      [parameters addObject:p];
+    }
+    AVMutableAudioMix *mix = [AVMutableAudioMix audioMix];
+    mix.inputParameters = parameters;
+    c.player.currentItem.audioMix = mix;
+    c.tapsReady = YES;
+    if (c.wantsPlay) [c.player play];
+  }
   return 0;
 }
-void *xavi_player_open(const char *path, char *error) {
+void *xavi_player_open(const char *path, const void *control, char *error) {
   @autoreleasepool {
     if (main_thread(error)) return NULL;
     @try {
       XaviPlayback *c = [XaviPlayback new];
+      c.equalizer = xavi_eq_stream_new(control);
       atomic_init(&c->completedSeekGeneration, 0);
       NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
       AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
@@ -118,8 +194,8 @@ int xavi_player_command(void *ctx, int command, double value, char *error) {
       XaviPlayback *c = (__bridge XaviPlayback *)ctx;
       if (check(c, error)) return -1;
       switch (command) {
-      case 0: [c.player play]; break;
-      case 1: [c.player pause]; break;
+      case 0: c.wantsPlay = YES; if (c.tapsReady) [c.player play]; break;
+      case 1: c.wantsPlay = NO; [c.player pause]; break;
       case 2: {
         c.ended = NO;
         c.seeking = YES;

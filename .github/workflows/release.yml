@@ -1,0 +1,202 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '11 3 * * *'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing v<version> tag or nightly; empty validates without publishing'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Serializes main pushes, scheduled builds and manual nightly publishing.
+concurrency:
+  group: xavi-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT: ${{ inputs.release_tag }}
+        run: |
+          case "$EVENT" in
+            schedule) tag=nightly ;;
+            push) if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag=$GITHUB_REF_NAME; else tag=nightly; fi ;;
+            *) tag=$INPUT ;;
+          esac
+          if [ -n "$tag" ]; then
+            python3 -c 'import sys; sys.path.insert(0, "scripts"); from package_release import validate_tag; validate_tag(sys.argv[1])' "$tag"
+          fi
+          if [ -n "$tag" ] && [ "$tag" != nightly ]; then
+            test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)" = "$GITHUB_SHA"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo 'Versioned releases are immutable; choose a new version.' >&2
+              exit 1
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: plan
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, platform: macos-aarch64, target: aarch64-apple-darwin, host: true }
+          - { os: macos-15-intel, platform: macos-x86_64, target: x86_64-apple-darwin, host: true }
+          - { os: ubuntu-24.04, platform: linux-x86_64, target: x86_64-unknown-linux-gnu, host: true }
+          - { os: ubuntu-24.04-arm, platform: linux-aarch64, target: aarch64-unknown-linux-gnu, host: true }
+          - { os: windows-2022, platform: windows-x86_64, target: x86_64-pc-windows-msvc, host: true }
+          - { os: macos-15, platform: ios-aarch64, target: aarch64-apple-ios, host: false }
+          - { os: macos-15, platform: ios-aarch64-sim, target: aarch64-apple-ios-sim, host: false }
+          - { os: ubuntu-24.04, platform: android-aarch64, target: aarch64-linux-android, host: false }
+          - { os: ubuntu-24.04, platform: android-armv7, target: armv7-linux-androideabi, host: false }
+          - { os: ubuntu-24.04, platform: android-x86_64, target: x86_64-linux-android, host: false }
+    defaults:
+      run:
+        shell: bash
+        working-directory: xavi
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: xavi
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: ./xavi/.github/actions/sources
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: xavi
+          shared-key: release-${{ matrix.target }}
+      - uses: nttld/setup-ndk@v1
+        if: startsWith(matrix.platform, 'android-')
+        with:
+          ndk-version: r27
+      - name: Install Android linker driver
+        if: startsWith(matrix.platform, 'android-')
+        run: cargo install cargo-ndk --locked --version 4.1.2
+      - name: Build and link the native backend from the packaged SDK
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+          TAG: ${{ needs.plan.outputs.tag || 'nightly' }}
+        run: |
+          python3 scripts/package_release.py sdk --tag "$TAG"
+          python3 -m zipfile -e target/release-assets/xavi-sdk.zip target/sdk-build
+          cd target/sdk-build/xavi
+          if [[ "$PLATFORM" == android-* ]]; then
+            cargo ndk -t "$TARGET" --platform 28 build --release --locked -p xavi-backend -p xavi-platform --examples
+          else
+            cargo build --release --locked --target "$TARGET" -p xavi-backend -p xavi-platform --examples
+          fi
+      - name: Build the host generator and package generated Haxe
+        if: matrix.host
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TAG: ${{ needs.plan.outputs.tag || 'nightly' }}
+        run: |
+          cargo build --manifest-path target/sdk-build/xavi/Cargo.toml --release --locked -p xavi-bindgen --bin xavi-haxe
+          executable=target/sdk-build/xavi/target/release/xavi-haxe
+          if [[ "$PLATFORM" == windows-* ]]; then executable="$executable.exe"; fi
+          "$executable" ash target/generated/ash
+          "$executable" rayzor target/generated/rayzor
+          python3 scripts/package_release.py tools --platform "$PLATFORM" --tag "$TAG" \
+            --binary "$executable" --generated target/generated
+      - uses: actions/upload-artifact@v7
+        if: matrix.host
+        with:
+          name: tools-${{ matrix.platform }}
+          path: xavi/target/release-assets/xavi-tools-*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: matrix.platform == 'linux-x86_64'
+        with:
+          name: sdk
+          path: xavi/target/release-assets/xavi-sdk.zip
+          if-no-files-found: error
+
+  package:
+    needs: [plan, check, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tools-*
+          path: target/release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdk
+          path: target/release-assets
+      - run: python3 scripts/package_release.py checksums target/release-assets --complete
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: target/release-assets/
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, package]
+    if: needs.plan.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: release
+      - name: Point nightly at the tested SDK
+        if: env.TAG == 'nightly'
+        run: |
+          git tag --force nightly "$GITHUB_SHA"
+          git push --force origin refs/tags/nightly
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            release/*.zip
+            release/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ env.TAG == 'nightly' }}
+          make_latest: ${{ env.TAG == 'nightly' && 'false' || 'true' }}

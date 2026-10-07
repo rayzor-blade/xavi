@@ -46,6 +46,17 @@ struct Buffer {
     offset: u64,
     offset_end: u64,
 }
+#[repr(C)]
+#[derive(Default)]
+struct MapInfo {
+    memory: Ptr,
+    flags: u32,
+    data: *mut u8,
+    size: usize,
+    maxsize: usize,
+    user_data: [Ptr; 4],
+    reserved: [Ptr; 4],
+}
 
 macro_rules! api {
     ($($name:ident($($arg:ty),*) -> $ret:ty;)+) => {
@@ -62,6 +73,11 @@ macro_rules! api {
 api! {
     gst_init_check(*mut i32, *mut *mut *mut c_char, *mut *mut GError) -> i32;
     gst_parse_launch(*const c_char, *mut *mut GError) -> Ptr;
+    gst_parse_bin_from_description(*const c_char, i32, *mut *mut GError) -> Ptr;
+    gst_element_get_static_pad(Ptr, *const c_char) -> Ptr;
+    gst_pad_get_current_caps(Ptr) -> Ptr;
+    gst_buffer_map(*mut Buffer, *mut MapInfo, u32) -> i32;
+    gst_buffer_unmap(*mut Buffer, *mut MapInfo) -> ();
     gst_element_factory_find(*const c_char) -> Ptr;
     gst_bin_get_by_name(Ptr, *const c_char) -> Ptr;
     gst_element_set_state(Ptr, i32) -> i32;
