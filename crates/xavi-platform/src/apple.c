@@ -206,7 +206,7 @@ static int32_t video_open(XaviCodec *c) {
                              kVTCompressionPropertyKey_AllowFrameReordering,
                              kCFBooleanFalse) ||
         VTSessionSetProperty(c->encoder, kVTCompressionPropertyKey_ProfileLevel,
-                             kVTProfileLevel_H264_Baseline_3_0) ||
+                             kVTProfileLevel_H264_Baseline_AutoLevel) ||
         property(c->encoder, kVTCompressionPropertyKey_AverageBitRate,
                  (int64_t)config->bitrate) ||
         property(c->encoder, kVTCompressionPropertyKey_MaxKeyFrameInterval,

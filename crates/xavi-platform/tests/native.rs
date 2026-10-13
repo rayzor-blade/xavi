@@ -219,6 +219,71 @@ fn h264_round_trip_preserves_frames_timestamps_and_flush_lifecycle() {
 }
 
 #[test]
+fn h264_viewport_sizes_round_trip_with_selected_level() {
+    for (width, height) in [(800, 560), (1280, 800)] {
+        let mut encoder = Codec::<VideoEncoder>::new(
+            Limits {
+                max_items: 2,
+                max_bytes: (width * height * 4) as usize,
+            },
+            Limits {
+                max_items: 2,
+                max_bytes: 2_000_000,
+            },
+        )
+        .unwrap();
+        encoder
+            .configure(VideoEncoderConfig {
+                codec: H264.into(),
+                width,
+                height,
+                bitrate: 6_000_000,
+                framerate: 30.0,
+            })
+            .unwrap();
+        let pixels = [30, 70, 180, 255].repeat((width * height) as usize);
+        let mut descriptor = VideoDescriptor::new(VideoPixelFormat::Bgra, width, height, 0);
+        descriptor.duration = Some(33_333);
+        encoder
+            .try_submit(VideoEncodeInput {
+                frame: Arc::new(VideoFrame::new(descriptor, &pixels, None).unwrap()),
+                key_frame: true,
+            })
+            .unwrap();
+        let mut packets = Vec::new();
+        wait_for_output(&mut encoder, &mut packets);
+        flush(&mut encoder, &mut packets);
+        assert_eq!(packets.len(), 1);
+        let config = packets[0].decoder_config.clone().unwrap();
+        assert_eq!(
+            (config.coded_width, config.coded_height),
+            (Some(width), Some(height))
+        );
+        let mut decoder = Codec::<VideoDecoder>::new(
+            Limits {
+                max_items: 2,
+                max_bytes: 2_000_000,
+            },
+            Limits {
+                max_items: 2,
+                max_bytes: (width * height * 4) as usize,
+            },
+        )
+        .unwrap();
+        decoder.configure(config).unwrap();
+        decoder.try_submit(packets[0].chunk.clone()).unwrap();
+        let mut frames = Vec::new();
+        flush(&mut decoder, &mut frames);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            (frames[0].info().coded_width, frames[0].info().coded_height),
+            (width, height)
+        );
+        assert_eq!(frames[0].info().timestamp, 0);
+    }
+}
+
+#[test]
 fn support_distinguishes_invalid_and_unsupported_configuration() {
     let mut c = AudioEncoderConfig {
         codec: "opus".into(),
