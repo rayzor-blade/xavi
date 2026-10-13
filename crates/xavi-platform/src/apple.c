@@ -207,6 +207,8 @@ static int32_t video_open(XaviCodec *c) {
                              kCFBooleanFalse) ||
         VTSessionSetProperty(c->encoder, kVTCompressionPropertyKey_ProfileLevel,
                              kVTProfileLevel_H264_Baseline_AutoLevel) ||
+        VTSessionSetProperty(c->encoder, kVTCompressionPropertyKey_YCbCrMatrix,
+                             kCVImageBufferYCbCrMatrix_ITU_R_709_2) ||
         property(c->encoder, kVTCompressionPropertyKey_AverageBitRate,
                  (int64_t)config->bitrate) ||
         property(c->encoder, kVTCompressionPropertyKey_MaxKeyFrameInterval,
