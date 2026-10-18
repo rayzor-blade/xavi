@@ -9,6 +9,7 @@ x_idl.workspace = true
 
 [dev-dependencies]
 syn = { version = "2", features = ["full"] }
+xavi-backend.workspace = true
 
 [lints]
 workspace = true

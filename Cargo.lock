@@ -561,6 +561,7 @@ version = "0.1.0"
 dependencies = [
  "syn 2.0.119",
  "x_idl",
+ "xavi-backend",
 ]
 
 [[package]]

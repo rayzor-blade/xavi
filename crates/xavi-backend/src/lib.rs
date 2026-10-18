@@ -314,7 +314,35 @@ pub fn install(out: impl AsRef<std::path::Path>) -> std::io::Result<std::path::P
     std::fs::create_dir_all(&root)?;
     let path = root.join("native.rs");
     std::fs::write(&path, include_str!("template/native.rs"))?;
+    // For a browser build: the program's side of a media player, and the agent a page runs for it.
+    std::fs::write(root.join("web.rs"), includable(WEB))?;
+    let page = out.as_ref().join("page");
+    std::fs::create_dir_all(&page)?;
+    std::fs::write(page.join(AGENT_MODULE), AGENT)?;
     Ok(path)
+}
+
+/// The browser backend, which `xavi_bindgen::web_backend` takes as the functions a page implements.
+pub const WEB: &str = include_str!("template/web.rs");
+
+/// The page agent a host starts for a program in a page, beside the generated wire as `xavi_wire.mjs`.
+pub const AGENT: &str = include_str!("template/agent.mjs");
+
+/// What a host imports for the agent, and the wire module it imports.
+pub const AGENT_MODULE: &str = "xavi.mjs";
+pub const WIRE_MODULE: &str = "xavi_wire.mjs";
+
+/// Source to `include!`: inner doc comments are not allowed there.
+fn includable(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| {
+            line.strip_prefix("//!")
+                .map_or(line.to_owned(), |doc| format!("//{doc}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 impl MediaBackend {

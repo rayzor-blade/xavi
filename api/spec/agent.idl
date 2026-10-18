@@ -1,0 +1,16 @@
+// xavi's page agent: what a program in a page asks of its media players. The wire generated from this file carries it;
+// crates/xavi-backend's agent.mjs implements XaAgent on the page's thread. A player is a slot, numbered from 0. What the
+// program reads of one, its state, position and duration, the agent keeps in the slot's words of the block the program gave
+// it, so reading is not a call (see template/web.rs).
+[Exposed=Window]
+interface XaAgent {
+  // Starts loading the file at `url`, relative to the page, into the slot, replacing a player it had.
+  undefined open(unsigned long slot, DOMString url);
+  // A browser lets play() through only after the user has interacted with the page: one it refuses is held, and made at
+  // the next press or key.
+  undefined play(unsigned long slot);
+  undefined pause(unsigned long slot);
+  undefined seek(unsigned long slot, double seconds);
+  undefined setVolume(unsigned long slot, double volume);
+  undefined close(unsigned long slot);
+};
