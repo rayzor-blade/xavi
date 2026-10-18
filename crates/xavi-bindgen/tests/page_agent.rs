@@ -28,6 +28,14 @@ fn main() {
     let mut e = Encoder::new();
     e.xa_agent_close(agent, &0);
     std::fs::write("close.bin", &e.bytes).unwrap();
+    // A file from a server that does not answer range requests.
+    let mut e = Encoder::new();
+    e.xa_agent_open(agent, &1, &"b.mp3".to_owned());
+    e.xa_agent_play(agent, &1);
+    std::fs::write("whole.bin", &e.bytes).unwrap();
+    let mut e = Encoder::new();
+    e.xa_agent_close(agent, &1);
+    std::fs::write("close-whole.bin", &e.bytes).unwrap();
 }
 "#;
 
@@ -71,6 +79,17 @@ class Audio extends EventTarget {
   load() { this.log.push("load"); }
 }
 globalThis.Audio = Audio;
+// A page and its server: a.mp3 is offered by range, as a streaming server does, and b.mp3 is not, as a plain static one is.
+globalThis.location = { href: "http://page/", origin: "http://page" };
+const revoked = [];
+URL.createObjectURL = (blob) => "blob:" + blob.size;
+URL.revokeObjectURL = (url) => revoked.push(url);
+globalThis.fetch = async (target) => {
+  const ranged = String(target).endsWith("a.mp3");
+  const headers = new Map([["content-length", "4"]]);
+  if (ranged) headers.set("accept-ranges", "bytes");
+  return { ok: true, headers, body: { cancel() {} }, blob: async () => new Blob(["abcd"]) };
+};
 const page = new EventTarget();
 globalThis.document = page;
 globalThis.requestAnimationFrame = (frame) => setTimeout(frame, 1);
@@ -98,6 +117,7 @@ const steps = [];
 
 // Opened, played and given a volume: the element is made and told to play, the browser refuses, the state is still opening.
 await send("open.bin");
+await sleep(10);
 const audio = made[0];
 steps.push(["opened", audio.src, audio.volume, slot().state, audio.log.join(",")]);
 audio.duration = 120;
@@ -131,6 +151,13 @@ steps.push(["ended", slot().state, slot().position]);
 // Closed.
 await send("close.bin");
 steps.push(["closed", audio.log.slice(-3).join(",")]);
+// A file that is fetched whole: played from memory, once the element has its source, and the memory let go when it is closed.
+await send("whole.bin");
+await sleep(10);
+const whole = made[1];
+steps.push(["whole", whole.src, whole.log.join(","), revoked.join(",")]);
+await send("close-whole.bin");
+steps.push(["whole closed", revoked.join(",")]);
 console.log(JSON.stringify(steps));
 process.exit(0);
 "#;
@@ -164,7 +191,9 @@ fn commands_reach_the_player_and_its_state_comes_back() {
             r#"["paused",1],"#,
             r#"["error",4],"#,
             r#"["ended",4,120],"#,
-            r#"["closed","pause,remove src,load"]]"#
+            r#"["closed","pause,remove src,load"],"#,
+            r#"["whole","blob:4","play",""],"#,
+            r#"["whole closed","blob:4"]]"#
         )
     );
 }

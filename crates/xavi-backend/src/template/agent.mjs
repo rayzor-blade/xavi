@@ -39,6 +39,8 @@ export function start({ memory, address }) {
     const player = players.get(slot);
     if (!player) return;
     player.wanted = true;
+    // Until its file has come the element has no source, and a browser refuses a play of that; it is made when the source is set.
+    if (!player.sourced) return;
     const started = player.audio.play();
     if (started && started.catch) {
       started.catch((e) => {
@@ -68,12 +70,34 @@ export function start({ memory, address }) {
     else state(slot, PLAYING);
   };
 
+  // A browser seeks in a file only where its server answers range requests; a plain static server does not, and the element then
+  // goes back to the start at every seek. So a file from the page's own server that was not offered by range is fetched whole and
+  // played from memory, as long as it is small; anything else is the element's own to stream.
+  const WHOLE_LIMIT = 64 << 20;
+  const playable = async (url) => {
+    try {
+      const target = new URL(url, location.href);
+      if (target.origin !== location.origin) return { src: url };
+      const response = await fetch(target);
+      const length = Number(response.headers.get("content-length")) || 0;
+      const ranged = (response.headers.get("accept-ranges") || "").toLowerCase() === "bytes";
+      if (!response.ok || ranged || length > WHOLE_LIMIT) {
+        if (response.body) response.body.cancel();
+        return { src: url };
+      }
+      const src = URL.createObjectURL(await response.blob());
+      return { src, owned: src };
+    } catch (_) {
+      return { src: url };
+    }
+  };
+
   const agent = {
     open(slot, url) {
       agent.close(slot);
       const audio = new Audio();
       audio.preload = "auto";
-      const player = { audio, wanted: false, refused: false };
+      const player = { audio, wanted: false, refused: false, sourced: false };
       players.set(slot, player);
       const on = (type, handler) => audio.addEventListener(type, handler);
       on("loadedmetadata", () => {
@@ -100,7 +124,17 @@ export function start({ memory, address }) {
         settle(slot, audio);
       });
       on("error", () => failed(slot, audio.error?.code || 4));
-      audio.src = url;
+      playable(url).then(({ src, owned }) => {
+        // Closed or opened again while the file came: nothing plays it.
+        if (players.get(slot) !== player) {
+          if (owned) URL.revokeObjectURL(owned);
+          return;
+        }
+        player.owned = owned;
+        player.sourced = true;
+        audio.src = src;
+        if (player.wanted) play(slot);
+      });
     },
     play,
     pause(slot) {
@@ -125,6 +159,7 @@ export function start({ memory, address }) {
       player.audio.pause();
       player.audio.removeAttribute("src");
       player.audio.load();
+      if (player.owned) URL.revokeObjectURL(player.owned);
     },
   };
 
