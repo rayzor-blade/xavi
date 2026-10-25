@@ -5,8 +5,8 @@
 //! From this workspace, generate Haxe with
 //! `cargo run -p xavi-bindgen --bin xavi-haxe -- ash <output>` (or `rayzor`).
 //! An adapter build script calls [`generate`] and `xavi_backend::install`, then
-//! includes both outputs. The generator is the sibling `../x-idl` checkout;
-//! generated code is a build artifact, not checked into this repository.
+//! includes both outputs. The generator is x-idl at the revision the workspace
+//! pins; generated code is a build artifact, not checked into this repository.
 //! See `examples/haxe/MediaData.hx` for the native data API. Running it requires
 //! a VM plugin that supplies runtime carriers and the backend context hook.
 

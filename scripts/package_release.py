@@ -33,6 +33,8 @@ def pinned_idl(root=ROOT, checkout=None):
     source = json.loads((root / "release-sources.json").read_text())["x-idl"]
     if source["repository"] != "rayzor-blade/x-idl" or not re.fullmatch(r"[0-9a-f]{40}", source["revision"]):
         raise ValueError("x-idl must be pinned to a full commit in rayzor-blade/x-idl")
+    if f'rev = "{source["revision"]}"' not in (root / "Cargo.toml").read_text():
+        raise ValueError("Cargo.toml must pin x-idl at the revision release-sources.json records")
     if checkout is not None:
         if git(checkout, "rev-parse", "HEAD") != source["revision"]:
             raise ValueError("x-idl checkout does not match release-sources.json")
@@ -41,17 +43,24 @@ def pinned_idl(root=ROOT, checkout=None):
     return source
 
 
-def sources(root, entries):
-    files = {}
+def sources(root, entries, exclude_ignored=False):
     for entry in entries:
-        path = root / entry
-        if not path.exists():
-            raise ValueError(f"missing release input: {path}")
-        for file in sorted(path.rglob("*")) if path.is_dir() else [path]:
-            if file.is_symlink():
-                raise ValueError(f"symlink in release inputs: {file}")
-            if file.is_file() and "__pycache__" not in file.parts and file.suffix != ".pyc":
-                files[file.relative_to(root).as_posix()] = file.read_bytes()
+        if not (root / entry).exists():
+            raise ValueError(f"missing release input: {root / entry}")
+    if exclude_ignored:
+        # Git's view of the tree: ignored build output, such as a test's target directory, stays out.
+        listed = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+                                          "--exclude-standard", "--", *entries], text=True)
+        paths = [root / name for name in sorted(set(listed.split("\0"))) if name]
+    else:
+        paths = [file for entry in entries
+                 for file in (sorted((root / entry).rglob("*")) if (root / entry).is_dir() else [root / entry])]
+    files = {}
+    for file in paths:
+        if file.is_symlink():
+            raise ValueError(f"symlink in release inputs: {file}")
+        if file.is_file() and "__pycache__" not in file.parts and file.suffix != ".pyc":
+            files[file.relative_to(root).as_posix()] = file.read_bytes()
     return files
 
 
@@ -77,10 +86,18 @@ def sdk(output, tag, root=ROOT, idl=None, allow_dirty=False):
         raise ValueError("xavi checkout must be clean (use --allow-dirty only for local packaging tests)")
     files = {f"xavi/{name}": data for name, data in sources(root, [
         "Cargo.toml", "Cargo.lock", "README.md", "release-sources.json", "api", "crates", "examples",
-    ]).items()}
+    ], exclude_ignored=True).items()}
+    # The SDK builds offline and --locked, from the x-idl it bundles beside xavi.
+    files["xavi/Cargo.toml"] += (
+        b'\n[patch."https://github.com/rayzor-blade/x-idl.git"]\nx_idl = { path = "../x-idl" }\n'
+    )
+    locked = f'source = "git+https://github.com/rayzor-blade/x-idl.git?rev={pin["revision"]}#{pin["revision"]}"\n'
+    if files["xavi/Cargo.lock"].count(locked.encode()) != 1:
+        raise ValueError("Cargo.lock must lock x-idl at the revision release-sources.json records")
+    files["xavi/Cargo.lock"] = files["xavi/Cargo.lock"].replace(locked.encode(), b"")
     files.update({f"x-idl/{name}": data for name, data in sources(idl, [
         "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "src", "tests",
-    ]).items()})
+    ], exclude_ignored=True).items()})
     manifest = {
         "schema": 1, "tag": tag, "revision": git(root, "rev-parse", "HEAD"),
         "dirty": dirty, "x-idl": pin, "targets": TARGETS,

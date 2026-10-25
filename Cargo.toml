@@ -11,8 +11,10 @@ xavi-core = { path = "crates/xavi-core" }
 xavi-backend = { path = "crates/xavi-backend" }
 xavi-bindgen = { path = "crates/xavi-bindgen" }
 xavi-platform = { path = "crates/xavi-platform" }
-# Develop against the same generator checkout as the sibling runtime projects.
-x_idl = { path = "../x-idl" }
+# The generator at the revision release-sources.json records, as the sibling
+# runtime projects pin it. To develop against a local checkout, patch it in,
+# as the SDK does for the copy it bundles.
+x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "753610fd220dcfb5cce358e9418eadc48cb4562d" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

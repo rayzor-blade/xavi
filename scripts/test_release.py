@@ -37,6 +37,7 @@ class ReleaseTest(unittest.TestCase):
                              "x-idl/Cargo.toml", "x-idl/LICENSE", "x-idl/tests/fixtures/window.idl"]:
                     self.assertIn(name, manifest["files"])
                 self.assertIn('path = "../x-idl"', archive.read("xavi/Cargo.toml").decode())
+                self.assertNotIn("git+https://github.com/rayzor-blade/x-idl.git", archive.read("xavi/Cargo.lock").decode())
                 self.assertEqual(manifest["x-idl"], json.loads((ROOT / "release-sources.json").read_text())["x-idl"])
 
     def test_release_requires_every_host_and_checksums_exact_bytes(self):

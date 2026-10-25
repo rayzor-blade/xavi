@@ -215,8 +215,10 @@ generated files. [hlavi](https://github.com/rayzor-blade/hlavi) is the current
 Ash/HashLink adapter. Generator support for Rayzor and Caribou does not yet
 constitute a packaged runtime integration for either.
 
-For development, keep `x-idl` beside the xavi checkout. Its release revision
-is recorded in [release-sources.json](release-sources.json). Use a recent
+x-idl comes from its git revision, pinned in `Cargo.toml` and recorded in
+[release-sources.json](release-sources.json); the release scripts check that
+the two agree. To develop against a local x-idl checkout, patch it in with
+`[patch."https://github.com/rayzor-blade/x-idl.git"]`. Use a recent
 stable Rust toolchain, Python 3.11+, and the platform SDK/toolchain:
 
 ```sh
