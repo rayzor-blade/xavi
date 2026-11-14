@@ -310,13 +310,36 @@ impl MediaBackend {
 /// Workers should retain core Arcs and use bounded `stream` channels; guest
 /// objects and future settlement stay on the runtime thread.
 pub fn install(out: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
-    let root = out.as_ref().join("xavi_backend");
+    install_with_scope(out.as_ref(), None)
+}
+
+/// Installs the adapter for a model nested beneath `scope`, such as
+/// `crate::model`, so it does not collide with an adapter's own types. The
+/// host's `with_media` stays at the crate root.
+pub fn install_scoped(
+    out: impl AsRef<std::path::Path>,
+    scope: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    install_with_scope(out.as_ref(), Some(scope))
+}
+
+fn install_with_scope(
+    out: &std::path::Path,
+    scope: Option<&str>,
+) -> std::io::Result<std::path::PathBuf> {
+    let scoped = |source: String| match scope {
+        Some(scope) => source
+            .replace("crate::", &format!("{scope}::"))
+            .replace(&format!("{scope}::with_media"), "crate::with_media"),
+        None => source,
+    };
+    let root = out.join("xavi_backend");
     std::fs::create_dir_all(&root)?;
     let path = root.join("native.rs");
-    std::fs::write(&path, include_str!("template/native.rs"))?;
+    std::fs::write(&path, scoped(include_str!("template/native.rs").to_owned()))?;
     // For a browser build: the program's side of a media player, and the agent a page runs for it.
-    std::fs::write(root.join("web.rs"), includable(WEB))?;
-    let page = out.as_ref().join("page");
+    std::fs::write(root.join("web.rs"), scoped(includable(WEB)))?;
+    let page = out.join("page");
     std::fs::create_dir_all(&page)?;
     std::fs::write(page.join(AGENT_MODULE), AGENT)?;
     Ok(path)

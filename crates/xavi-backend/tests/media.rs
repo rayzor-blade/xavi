@@ -141,3 +141,14 @@ fn input_can_arrive_as_incremental_nonseekable_bytes() {
     assert!(matches!(input.try_next().unwrap(), Read::End));
     assert_eq!(output, [1, 2, 3, 4, 5, 6]);
 }
+
+#[test]
+fn a_scoped_install_finds_the_model_beneath_its_scope_and_the_host_at_the_root() {
+    let out = std::env::temp_dir().join(format!("xavi-install-{}", std::process::id()));
+    let native = install_scoped(&out, "crate::model").unwrap();
+    let source = std::fs::read_to_string(native).unwrap();
+    assert!(source.contains("use crate::model::*;"));
+    assert!(source.contains("crate::with_media("));
+    assert!(!source.contains("crate::model::with_media"));
+    std::fs::remove_dir_all(out).unwrap();
+}
