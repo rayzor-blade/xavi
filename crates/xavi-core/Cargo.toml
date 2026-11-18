@@ -2,6 +2,8 @@
 name = "xavi-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Runtime-neutral media storage, layouts and resource handles for xavi"
 
 [lints]

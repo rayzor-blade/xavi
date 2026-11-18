@@ -234,3 +234,11 @@ For CPU-only data and generation checks, run
 `cargo test -p xavi-core -p xavi-bindgen -p xavi-check --locked`.
 Android cross builds use `cargo-ndk` and NDK r27 with API level 28; Apple
 builds use the matching Xcode SDK. FFmpeg is not needed for these builds.
+
+## License
+
+xavi is licensed under Apache-2.0; see [LICENSE](LICENSE). Distributed binaries
+and tools retain the pinned dependency licenses and notices under
+[third-party/](third-party/NOTICES.md). Refresh them with
+`python3 scripts/third_party_notices.py` after Cargo manifest or lock changes;
+`--check` verifies release inputs and source archives.
