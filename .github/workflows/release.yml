@@ -114,6 +114,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           TAG: ${{ needs.plan.outputs.tag || 'nightly' }}
         run: |
+          python3 scripts/third_party_notices.py --check
           python3 scripts/package_release.py sdk --tag "$TAG"
           python3 -m zipfile -e target/release-assets/xavi-sdk.zip "$RUNNER_TEMP/xavi-sdk-build"
           cd "$RUNNER_TEMP/xavi-sdk-build/xavi"

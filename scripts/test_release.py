@@ -6,8 +6,9 @@ from pathlib import Path
 import tempfile
 import unittest
 from zipfile import ZipFile
+from unittest.mock import patch
 
-from package_release import ROOT, HOSTS, TARGETS, checksums, sdk, snapshot, validate_tag
+from package_release import ROOT, HOSTS, TARGETS, checksums, sdk, snapshot, validate_tag, sources
 
 
 class ReleaseTest(unittest.TestCase):
@@ -32,6 +33,7 @@ class ReleaseTest(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), digest)
                     self.assertFalse(set(Path(name).parts) & {".git", "target", "__pycache__"})
                 for name in ["xavi/api/spec/media.idl", "xavi/api/media.api.rs",
+                             "xavi/LICENSE", "xavi/third-party/NOTICES.md", "xavi/third-party/inventory.json",
                              "xavi/Cargo.lock", "xavi/crates/xavi-platform/src/player/apple.m",
                              "xavi/crates/xavi-backend/src/template/native.rs",
                              "x-idl/Cargo.toml", "x-idl/LICENSE", "x-idl/tests/fixtures/window.idl"]:
@@ -39,6 +41,19 @@ class ReleaseTest(unittest.TestCase):
                 self.assertIn('path = "../x-idl"', archive.read("xavi/Cargo.toml").decode())
                 self.assertNotIn("git+https://github.com/rayzor-blade/x-idl.git", archive.read("xavi/Cargo.lock").decode())
                 self.assertEqual(manifest["x-idl"], json.loads((ROOT / "release-sources.json").read_text())["x-idl"])
+
+    def test_sdk_accepts_windows_lock_line_endings(self):
+        def windows_sources(root, entries, **kwargs):
+            files = sources(root, entries, **kwargs)
+            if "Cargo.lock" in files:
+                files["Cargo.lock"] = files["Cargo.lock"].replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            return files
+        with tempfile.TemporaryDirectory() as temporary, patch("package_release.sources", windows_sources):
+            path = sdk(Path(temporary), "nightly", allow_dirty=True)
+            with ZipFile(path) as archive:
+                locked = archive.read("xavi/Cargo.lock")
+                self.assertIn(b"\r\n", locked)
+                self.assertNotIn(b"git+https://github.com/rayzor-blade/x-idl.git", locked)
 
     def test_release_requires_every_host_and_checksums_exact_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:

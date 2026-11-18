@@ -85,16 +85,18 @@ def sdk(output, tag, root=ROOT, idl=None, allow_dirty=False):
     if dirty and not allow_dirty:
         raise ValueError("xavi checkout must be clean (use --allow-dirty only for local packaging tests)")
     files = {f"xavi/{name}": data for name, data in sources(root, [
-        "Cargo.toml", "Cargo.lock", "README.md", "release-sources.json", "api", "crates", "examples",
+        "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "third-party", "release-sources.json", "api", "crates", "examples",
     ], exclude_ignored=True).items()}
     # The SDK builds offline and --locked, from the x-idl it bundles beside xavi.
     files["xavi/Cargo.toml"] += (
         b'\n[patch."https://github.com/rayzor-blade/x-idl.git"]\nx_idl = { path = "../x-idl" }\n'
     )
     locked = f'source = "git+https://github.com/rayzor-blade/x-idl.git?rev={pin["revision"]}#{pin["revision"]}"\n'
-    if files["xavi/Cargo.lock"].count(locked.encode()) != 1:
+    lines = files["xavi/Cargo.lock"].splitlines(keepends=True)
+    matching = [line for line in lines if line.rstrip(b"\r\n") == locked.rstrip("\n").encode()]
+    if len(matching) != 1:
         raise ValueError("Cargo.lock must lock x-idl at the revision release-sources.json records")
-    files["xavi/Cargo.lock"] = files["xavi/Cargo.lock"].replace(locked.encode(), b"")
+    files["xavi/Cargo.lock"] = b"".join(line for line in lines if line != matching[0])
     files.update({f"x-idl/{name}": data for name, data in sources(idl, [
         "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "src", "tests",
     ], exclude_ignored=True).items()})
@@ -117,6 +119,7 @@ def generator(output, platform, binary, generated, tag):
                 raise ValueError(f"missing generated {runtime} {resource}")
     name = "bin/xavi-haxe.exe" if platform.startswith("windows") else "bin/xavi-haxe"
     files = {name: binary.read_bytes(), "README.md": (ROOT / "README.md").read_bytes()}
+    files.update(sources(ROOT, ["LICENSE", "third-party"]))
     files.update({f"haxe/{path}": data for path, data in sources(generated, ["ash", "rayzor"]).items()})
     metadata = {"schema": 1, "tag": tag, "revision": git(ROOT, "rev-parse", "HEAD"), "platform": platform}
     files["xavi-tools.json"] = (json.dumps(metadata, indent=2) + "\n").encode()
